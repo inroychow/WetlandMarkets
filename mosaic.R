@@ -127,8 +127,7 @@ process_service_area <- function(i, lookup_table) {
   raster_dir  <- "Classified HUC12 Rasters"
   lookup_table_path <- "Service Areas/Service_Area_HUC12_Lookup.rds"
   
-  lookup_table <- readRDS(lookup_table_path)
-  lookup_table <- lookup_table[500:1863, ]  # Subset before use
+  lookup_table <- readRDS(lookup_table_path)# Subset before use
   
   # Extract service area ID and HUC12 codes
   sa_id  <- lookup_table$ID[i]
@@ -212,3 +211,61 @@ repeat {
 }
 
 plan(sequential)
+
+
+#-----------------------------------------------#
+#           To use arguments.........           #
+#-----------------------------------------------#
+
+sa_polygons <- readRDS("Service Areas/ServiceAreas_agg.rds")
+lookup_table <- readRDS(lookup_table_path)
+
+results <- future_lapply(
+  X = service_area_indices,
+  FUN = function(i) process_service_area(i, lookup_table, sa_polygons),
+  future.seed = TRUE
+)
+
+process_service_area <- function(i, lookup_table, sa_polygons) {
+  library(terra)
+  
+  # Extract service area ID and HUC12 codes
+  sa_id  <- lookup_table$ID[i]
+  
+  # Define output path
+  out_path <- file.path(output_dir, paste0(sa_id, "_mosaic.tif"))
+  
+  # Check if the file already exists
+  if (file.exists(out_path)) {
+    return(NULL)  # Skip processing if already done
+  }
+  
+  huc12s <- lookup_table$huc12s[[i]]
+  
+  # Read rasters only if they exist
+  tif_paths <- file.path(raster_dir, paste0("huc12_", huc12s, "_raster.tif"))
+  tif_paths <- tif_paths[file.exists(tif_paths)]  
+  if (length(tif_paths) == 0) return(NULL)
+  
+  ras_list <- lapply(tif_paths, rast)
+  mosaic_ras <- do.call(terra::mosaic, ras_list)
+  
+  # Extract service area polygon **(already loaded in memory)**
+  sa_poly <- sa_polygons[sa_polygons$ID == sa_id, ]
+  if (nrow(sa_poly) == 0) return(NULL)
+  
+  # Crop and mask
+  mosaic_cropped <- terra::crop(mosaic_ras, sa_poly)
+  mosaic_masked <- terra::mask(mosaic_cropped, sa_poly)
+  
+  # Save
+  terra::writeRaster(mosaic_masked, out_path, overwrite = FALSE)
+  
+  return(sa_id)
+}
+
+results <- future_lapply(
+  X = service_area_indices,
+  FUN = function(i) process_service_area(i, lookup_table, sa_polygons),
+  future.seed = TRUE
+)
