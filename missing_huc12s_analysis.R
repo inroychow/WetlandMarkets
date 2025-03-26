@@ -39,7 +39,7 @@ huc12_boundaries <- vect("Variables/huc12_boundaries.gpkg")
 wetland_raster   <- rast("Variables/conus_wetlands.tif")
 
 # 5. Create output folder for extracted wetlands
-extracted_wetlands_folder <- "Classified HUC12 Rasters/Missing HUC12s - 40km"
+extracted_wetlands_folder <- "Classified HUC12 Rasters/Missing HUC12 Rasters - 40km"
 dir.create(extracted_wetlands_folder, recursive = TRUE, showWarnings = FALSE)
 
 # 6. Extract wetland rasters for each missing HUC12
