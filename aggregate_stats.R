@@ -226,7 +226,8 @@ names(newlabs)=c("normalized_loss_units","normalized_loss_values")
 a=ggplot(
   results_long_normalized,
   aes(x = x, y = y,group=unit,lwd=n_obs,col=comparison)) + geom_line(alpha=0.2)+
-  geom_vline(xintercept = 1, linetype = "dashed") + geom_line(data=ecdf_summary,aes(x=x,y=mean_y),col="black",inherit.aes=FALSE)+
+  geom_vline(xintercept = 1, linetype = "dashed",col="grey10") + geom_line(data=ecdf_summary,aes(x=x,y=mean_y),col="black",inherit.aes=FALSE)+
   scale_x_log10() + facet_wrap(~comparison, labeller=labeller(comparison=newlabs))+labs(y="Cumulative Density",x="Value Relative to Bank Mean")+
-  theme_bw()+scale_linewidth_continuous(guide="none")+scale_color_discrete(guide="none")+theme(strip.background =element_rect(fill="white"))
+  theme_bw()+scale_linewidth_continuous(guide="none")+scale_color_discrete(guide="none")+theme(strip.background =element_rect(fill="white"))+
+  geom_vline(xintercept = 1.5, linetype = "dashed",col="grey50")+geom_vline(xintercept = 2, linetype = "dashed",col="grey80")
 
