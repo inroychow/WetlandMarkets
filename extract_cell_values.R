@@ -168,3 +168,76 @@ progressr::with_progress({
 
 message("Bank extraction complete. All files saved in: ", output_folder)
 
+
+# --------------------------------------------------------#
+#-            Extractions for Outlier Banks              -#
+#---------------------------------------------------------#
+
+# Paths
+raster_folder <- "CONUS\\Service Area Mosaics 2021"  # Folder where service area TIFFs are stored
+output_folder <- "Extractions/Extract Banks 2021"
+
+# Load datasets
+outlier_banks <- readRDS("Footprints/outlier_banks.rds")
+
+sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
+
+# Function to sanitize names
+sanitize_name <- function(name) {
+  name <- gsub("[^A-Za-z0-9_-]", "_", name)  # Replace non-alphanumeric characters with "_"
+  name <- gsub("_+", "_", name)  # Replace multiple "_" with a single "_"
+  name <- gsub("^_|_$", "", name)  # Remove leading or trailing "_"
+  return(name)
+}
+
+# Apply name sanitization
+outlier_banks$Name <- sapply(outlier_banks$Name, sanitize_name)
+#saveRDS(banks, "Footprints/footprints_and_buffers.rds")
+
+# Filter banks to match those in service areas
+outlier_banks <- outlier_banks[outlier_banks$Name %in% sas$ID, ]
+
+# Create output directory if it doesn't exist
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)
+}
+
+# Progress bar setup
+handlers(global = TRUE)
+progressr::with_progress({
+  p <- progressr::progressor(along = outlier_banks$Name)
+  
+  results <- lapply(1:nrow(outlier_banks), function(i) {
+    test_bank <- outlier_banks[i, ]
+    test_bank_name <- test_bank$Name
+    raster_path <- file.path(raster_folder, paste0(test_bank_name, "_mosaic.tif"))
+    
+    p(sprintf("Processing: %s", test_bank_name))
+    
+    # Check if raster exists
+    if (!file.exists(raster_path)) {
+      warning(sprintf("Raster not found for %s, skipping...", test_bank_name))
+      return(NULL)
+    }
+    
+    # Load raster
+    sa_raster <- rast(raster_path)
+    
+    # Extract values
+    extracted_data <- terra::extract(
+      x = sa_raster,
+      y = test_bank,  # Extract for the single bank polygon
+      cells = TRUE
+    )
+    
+    # Attach bank name
+    extracted_data$bank_name <- test_bank_name  
+    
+    # Save the extracted data
+    saveRDS(extracted_data, file.path(output_folder, paste0("bank_extract_", test_bank_name, ".rds")))
+    
+    return(extracted_data)
+  })
+})
+
+message("Bank extraction complete. All outlier bank files saved in: ", output_folder)
