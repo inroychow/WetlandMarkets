@@ -104,7 +104,7 @@ raster_folder <- "Mosaics"  # Folder where service area TIFFs are stored
 output_folder <- "Extractions/Extract Banks"
 
 # Load datasets
-banks <- readRDS("Footprints/footprints_and_buffers.rds")
+banks <- readRDS("Bank Footprints/footprints_and_buffers.rds")
 
 sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
 
