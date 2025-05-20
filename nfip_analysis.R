@@ -26,7 +26,7 @@ fit_hurdle_model <- function(df_group,policy_control=FALSE) {
   if(policy_control==TRUE){
     #merge in relevant data from policies
     df_complete=merge(df_complete,policies%>%filter(tract%in%unique(df_complete$tract))%>%
-                      select(tract,policyeffective_year,total_coverage_2025),
+                      select(tract,policyeffective_year,total_coverage_2025,policies_count),
                       by.x=c("tract","claim_year"),by.y=c("tract","policyeffective_year"),all.x=TRUE,all.y=FALSE)
   }
   
@@ -57,12 +57,12 @@ fit_hurdle_model <- function(df_group,policy_control=FALSE) {
   if(policy_control==TRUE){
     # First stage: binary model
     model_zero <- tryCatch({
-      feglm(has_claims ~ claim_year+log(total_coverage_2025) | tract, family = binomial(), data = df_complete)
+      feglm(has_claims ~ claim_year+log(policies_count) | tract, family = binomial(), data = df_complete,weights=~log(policies_count))
     }, error = function(e) NULL)
     
     # Second stage: log-linear model for positive values
     model_positive <- tryCatch({
-      feols(log(total_paid_2025) ~ claim_year+log(total_coverage_2025) | tract, data = df_complete %>% filter(total_paid_2025 > 0))
+      feols(log(total_paid_2025) ~ claim_year+log(total_coverage_2025) | tract, data = df_complete %>% filter(total_paid_2025 > 0),weights=~log(total_coverage_2025))
     }, error = function(e) NULL)
     
     # Tidy model outputs if both succeeded
@@ -116,6 +116,6 @@ model_results <- dat %>%
   ) %>%
   select(banks_upstream, stage, term, estimate, std.error, p.value)
 
-write.csv(model_results,file="data/hurdle_model_2009_2021_censusFEs_policycontrol.csv")
+write.csv(model_results,file="data/hurdle_model_2009_2021_censusFEs_policycontrol_weighted.csv")
 
 a=ggplot(model_results%>%filter(!is.na(estimate)),aes(x=estimate))+geom_histogram()+facet_wrap(~stage)
