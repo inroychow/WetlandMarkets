@@ -21,12 +21,12 @@ mod_pos=lm(estimate~I(log(sum_housing_value_loss)),data=coefs%>%filter(stage=="p
 
 #now look at any additional effect of differential flood valuation in lost wetlands vs bank
 #the larger this variable, the larger trends in flood damages we would expect
-coefs$diff_val=coefs$sum_housing_value_bank-coefs$sum_housing_value_loss
+coefs$diff_val=coefs$median_housing_value_bank-coefs$median_housing_value_loss
 #normalize 
 coefs$diff_val=(coefs$diff_val-mean(coefs$diff_val,na.rm=T))/sd(coefs$diff_val,na.rm=T)
 
-mod_zero=lm(estimate~I(log(sum_housing_value_loss))+diff_val,data=coefs%>%filter(stage=="zero"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
-mod_pos=lm(estimate~I(log(sum_housing_value_loss))+diff_val,data=coefs%>%filter(stage=="positive"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0)])
+mod_zero=lm(estimate~I(log(sum_housing_value_loss))*diff_val,data=coefs%>%filter(stage=="zero"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
+mod_pos=lm(estimate~I(log(sum_housing_value_loss))*diff_val,data=coefs%>%filter(stage=="positive"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0)])
 
 summary(mod_zero)
 summary(mod_pos)
