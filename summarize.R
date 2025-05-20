@@ -297,7 +297,7 @@ for (file_path in rds_files) {
 ##-----------------------------------------##
 
 # Define output directory
-output_dir <- "Extractions/Extract Service Areas 2021/Summaries Service Areas"
+output_dir <- "Extractions and Summaries/Summaries Service Areas/"
 
 # List all RDS files
 rds_files <- list.files(output_dir, pattern = "^summary_.*\\.rds$", full.names = TRUE)
@@ -322,5 +322,61 @@ combined_df <- select(combined_df, -sa_name)
 
 print(head(combined_df))
 
+
+# Change a faulty bank name
+sa_summary$sa_id[sa_summary$sa_id == "Three_Lakes_Regional_MB_FDOT_"] <- "Three_Lakes_Regional_MB_FDOT"
+# loss_summary = readRDS("Extractions and Summaries/Summaries Loss/loss_summary.rds")
+# loss_summary$sa_id[loss_summary$sa_id == "Three_Lakes_Regional_MB_FDOT_"] <- "Three_Lakes_Regional_MB_FDOT"
+
 # Save the combined dataframe
 saveRDS(combined_df, file.path(output_dir, "sa_summary.rds"))
+
+
+# -------------------
+
+# Combine into one df
+
+bank_summary = readRDS("Extractions and Summaries/Summaries Banks/bank_summary.rds")
+sa_summary = readRDS("Extractions and Summaries/Summaries Service Areas/sa_summary.rds")
+loss_summary = readRDS("Extractions and Summaries/Summaries Loss/loss_summary.rds")
+
+bank_summary = bank_summary %>% 
+  dplyr::rename(id = bank_name,
+                sum_hu_bank = sum_housing_units,
+                mean_hu_bank = mean_housing_units,
+                median_hu_bank = median_housing_units,
+                max_hu_bank = max_housing_units) %>% 
+  dplyr::select(id, 
+                sum_hu_bank,
+         mean_hu_bank,
+         median_hu_bank,
+         max_hu_bank)
+
+
+sa_summary = sa_summary %>% 
+  dplyr::rename(id = sa_id,
+                sum_hu_sa = sum_housing_units,
+                mean_hu_sa = mean_housing_units,
+                median_hu_sa = median_housing_units,
+                max_hu_sa = max_housing_units) %>% 
+  dplyr::select(id, 
+                sum_hu_sa,
+                mean_hu_sa,
+                median_hu_sa,
+                max_hu_sa)
+
+loss_summary = loss_summary %>% 
+  dplyr::rename(id = sa_id,
+                sum_hu_loss = sum_housing_units,
+                mean_hu_loss = mean_housing_units,
+                median_hu_loss = median_housing_units,
+                max_hu_loss = max_housing_units) %>% 
+  dplyr::select(id, 
+                sum_hu_loss,
+                mean_hu_loss,
+                median_hu_loss,
+                max_hu_loss)
+
+summary <- bank_summary %>%
+  inner_join(sa_summary, by = "id") %>%
+  inner_join(loss_summary, by = "id")

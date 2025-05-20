@@ -1,216 +1,187 @@
-#We are subsetting and generating the NFIP claims data on a county level and a zipcode level.
 
-setwd("C:/Users/indumati/Box/Mitigation bank generate backup 5.9")
+setwd("C:/Users/indumati/Box/Paper2_final")
+
+
 library(pacman)
-p_load(tidyverse, rgdal, sp, raster, sf, RColorBrewer, ggplot2, dplyr, raster, gstat, dismo, openxlsx)
+p_load(tidyverse, rgdal, sp, raster, sf, RColorBrewer, ggplot2, dplyr, raster, gstat, dismo, openxlsx, lubridate, data.table)
 
-#Load NFIP claims CSV - Source: FIMA NFIP Redacted Claims Dataset
-nfip <- read_csv("NFIP/Claims/FimaNfipClaims.csv")
 
-claims <- nfip[,c("countyCode", "reportedZipCode", "yearOfLoss", "dateOfLoss",
+# ------------------------------- Load all necessary raw data -----------------------------
+
+# NFIP data: FIMA NFIP Redacted Claims/Policies Dataset -----
+nfipclaims <- read_csv("NFIP/Claims/FimaNfipClaims.csv")
+nfippolicies <- fread("CONUS/FimaNfipPolicies.csv") # use data.table package bc large dataset
+
+# Bank and huc12 geometry -----
+banks = readRDS("Bank Footprints/footprints_and_buffers.rds")
+huc12s = readRDS("Variables/huc12_boundaries.rds")
+huc12s = st_transform(huc12s, st_crs(banks))
+
+huc12s = st_as_sf(huc12s)
+banks = st_as_sf(banks)
+
+banks <- st_make_valid(banks)
+huc12s <- st_make_valid(huc12s)
+
+# HUC12 to downstream tracts mapping 
+htdt = readRDS("Variables/htdt_conus.rds")
+
+#------------------------------- CPI to convert to 2025 dollars ----------------------------------
+
+cpi_df <- tibble(
+  year = 1978:2025,
+  cpi = c(65.2, 72.6, 82.4, 90.9, 96.5, 99.6, 103.9, 107.6, 109.6, 113.6, 118.3,
+          124.0, 130.7, 136.2, 140.3, 144.5, 148.2, 152.4, 156.9, 160.5, 163.0,
+          166.6, 172.2, 177.1, 179.9, 184.0, 188.9, 195.3, 201.6, 207.3, 215.3,
+          214.5, 218.1, 224.9, 229.6, 232.957, 236.736, 237.017, 240.007, 245.120,
+          251.107, 255.657, 258.811, 270.970, 292.655, 301.808, 310.350, 318.000)
+)
+
+# ---------------------------------------------------
+# ----------------- CLAIMS --------------------------
+# ---------------------------------------------------
+
+claims <- nfipclaims[,c("censusTract", "yearOfLoss",
                     "amountPaidOnBuildingClaim", "amountPaidOnContentsClaim", 
-                    "totalBuildingInsuranceCoverage", "totalContentsInsuranceCoverage", "crsClassificationCode", "ratedFloodZone", "waterDepth", "latitude", "longitude", "censusTract")]
+                    "totalBuildingInsuranceCoverage", "totalContentsInsuranceCoverage")]
 
-colnames(claims) <- c("county_fip", "zip", "year", "date", "buildings_paid", "contents_paid", "buildings_coverage", "contents_coverage", "CRS", "floodZone", "water_depth", "lat", "long", "census_tract")
+colnames(claims) <- c("census_tract", "year", "buildings_paid", "contents_paid", "buildings_coverage", "contents_coverage")
 claims$claims_count <- 1
-
-#Deal with CRS
-claims$CRS <- as.character(claims$CRS)
-claims$floodZone <- trimws(claims$floodZone)
-# Re-classify flood zones into SFHA and Non-SFHA
-SFHA <- c("AE", "VE", "V", "A", "AOB", "A14", "AO", "A07", "A09", "A05", "A08", 
-          "A06", "A04", "A10", "A13", "A01", "AH", "A11", "A17", "AHB", "A03", "V20", "A15", "A12", "V15", 
-          "D", "A02", "V08", "A16", "V09", "V10", "V19", "V12", "V11", "A30", "A18", "A21", "A22", "V13", 
-          "V16", "A20", "A19", "V06", "V18", "V17", "A24", "A25", "V05", "V14", "V04", "V21", "V07", "V02", "A23", 
-          "A26", "A28", "V03", "V01", "V22", "A27", "V23", "V30", "V24", "V27")
-
-non_SFHA <- c("B", "C", "X", "AR", "A99") #AR And A99 are not treated as SFHA for CRS classification
-claims$floodZone <- trimws(claims$floodZone)
-claims$floodZone <- ifelse(claims$floodZone %in% SFHA, "SFHA", 
-                      ifelse(claims$floodZone %in% non_SFHA, "Non SFHA", "Unknown"))
-
-crs_discount_SFHA <- c('1' = 0.45, '2' = 0.40, '3' = 0.35, '4' = 0.30, '5' = 0.25, '6' = 0.20, '7' = 0.15, '8' = 0.10, '9' = 0.05, '10' = 0.00)
-
-crs_discount_nonSFHA <- c('1' = 0.10, '2' = 0.10, '3' = 0.10, '4' = 0.10, '5' = 0.10, '6' = 0.10, '7' = 0.05, '8' = 0.05, '9' = 0.05, '10' = 0.00)
-
-claims$CRS_discount <- ifelse(claims$floodZone == "SFHA", 
-                              crs_discount_SFHA[claims$CRS],
-                              ifelse(claims$floodZone == "Non SFHA",
-                                     crs_discount_nonSFHA[claims$CRS], NA))
-
-claims$CRS_discount[is.na(claims$CRS_discount)] <- 0
 
 claims = claims %>% 
   mutate(total_paid = buildings_paid + contents_paid)
-saveRDS(claims, "NFIP/Claims/claims.rds")
+
+# Adjust for inflation
+claims_adj <- claims %>%
+  left_join(cpi_df, by = "year") %>%
+  mutate(cpi_2025 = 318.000,
+         inflation_factor = cpi_2025 / cpi,
+         total_paid_2025 = total_paid * inflation_factor)
+
+# Round to nearest dollar
+claims_adj$total_paid_2025 <- round(claims_adj$total_paid_2025)
+
+# -----------------------------------------
+
+# Unnest downstream tracts from htdt
+tracts_to_keep <- htdt %>%
+  unnest(cols = downstream_tracts) %>%
+  distinct(downstream_tracts) %>%
+  pull(downstream_tracts)
+
+# Subset claims_adj to only include those census tracts
+claims <- claims_adj %>%
+  filter(census_tract %in% tracts_to_keep) %>% 
+  rename(tract = census_tract)
+
+claims = claims %>% 
+  dplyr::select(-cpi, -cpi_2025, -lat, -inflation_factor)
 
 
+# Perform intersection: returns geometry of overlaps
+intersection <- st_intersection(
+  banks %>% dplyr::select(Name),
+  huc12s %>% dplyr::select(huc12)
+)
 
+bank_huc12 <- intersection %>%
+  st_drop_geometry() %>%
+  distinct(Name, huc12)
 
-# Do florida analysis
+# Expand the downstream tract list into one row per pair
+htdt_long <- htdt %>%
+  tidyr::unnest_longer(downstream_tracts) %>%
+  rename(tract = downstream_tracts)
 
-library(tigris)  # to get census tract shapefiles
+banks_upstream_tracts <- bank_huc12 %>%
+  inner_join(htdt_long, by = "huc12") %>%
+  distinct(tract, Name)
 
-# Load Florida tract shapefile
-fl_tracts <- tracts(state = "FL", year = 2020, class = "sf")
-fl_tracts = st_transform(fl_tracts, 4326)
-# Convert your claims data to an sf object using coordinates
-claims_sf <- claims %>%
-  filter(!is.na(lat) & !is.na(long)) %>%
-  st_as_sf(coords = c("long", "lat"), crs = 4326, remove = FALSE)
-
-# Spatial join to get census tracts from FL only
-claims_fl <- st_join(claims_sf, fl_tracts["GEOID"])
-
-
-
-# Filter for 1983–1987 and 2019–2023
-claims_window <- claims_fl %>%
-  filter(year %in% c(1983:1987, 2019:2023))
-
-# Create a column for the time window (1985 or 2021)
-claims_window <- claims_window %>%
-  mutate(window = case_when(
-    year %in% 1983:1987 ~ "1985_5yr",
-    year %in% 2019:2023 ~ "2021_5yr",
-    TRUE ~ NA_character_
-  ))
-
-# Group by census tract and window, then calculate average claim amount
-avg <- claims_window %>%
-  group_by(GEOID, window) %>%
+claims_by_tract_year <- claims %>%              # start from the claim-level data
+  group_by(tract, year) %>%                         # <- one row per tract *and* year
   summarise(
-    avg_total_paid = mean(total_paid, na.rm = TRUE),
-    avg_claims_count = mean(claims_count, na.rm = TRUE),
+    n_claims        = n(),                          # how many claims
+    total_paid_2025 = sum(total_paid_2025,  na.rm = TRUE),
+    .groups = "drop"
+  )
+
+## ----------------  banks: 1 row per tract ----------------
+banks_per_tract <- banks_upstream_tracts %>%        # already tract–bank pairs
+  group_by(tract) %>%                               # collapse to one row per tract
+  summarise(
+    banks_upstream  = paste(unique(Name), collapse = "; "),   # list of names
+    n_banks         = n_distinct(Name),
     .groups = "drop"
   )
 
 
-avg_adj <- avg %>%
+## ---------------- 3. final join ----------------
+claims_final <- claims_by_tract_year %>%
+  left_join(banks_per_tract, by = "tract")
+
+sanitize_path <- function(path) {
+  path <- gsub("[[:space:]]+", "_", path)
+  path <- gsub("[^[:alnum:]_/-]", "", path)
+  return(path)
+}
+
+# Apply it to semicolon-separated names
+claims_final <- claims_final %>%
   mutate(
-    avg_total_paid_2021 = case_when(
-      window == "1985_5yr" ~ avg_total_paid * 2.52,
-      window == "2021_5yr" ~ avg_total_paid  # already in 2021 dollars
-    ),
-    avg_claims_count_2021 = avg_claims_count  
-  )
+    banks_upstream = banks_upstream %>%
+      str_split(";\\s*") %>%                            # split on semicolons
+      map_chr(~ paste(map_chr(.x, sanitize_path),      # sanitize each name
+                      collapse = ";"))                 # rejoin with semicolon
+  ) %>% 
+  rename(claim_year = year)
 
 
-library(tigris)
-library(dplyr)
-library(tidyr)
-library(sf)
-library(ggplot2)
-library(scales)
-
-# --- 0. (Re-)load tract shapes, keep as sf ---------------------------
-fl_tracts <- tracts(state = "FL", year = 2020, class = "sf") |>
-  st_transform(4326)
-
-# --- 1. Make the wide table & drop geometry --------------------------
-diff_df <- avg_adj |>                          # from your previous step
-  st_drop_geometry() |>                        # <-- key line
-  dplyr::select(GEOID, window, avg_total_paid_2021) |>
-  pivot_wider(names_from  = window,
-              values_from = avg_total_paid_2021) |>
-  mutate(diff_paid_2021 = `2021_5yr` - `1985_5yr`)
-
-# --- 2. Join attributes onto tracts ----------------------------------
-fl_tracts_diff <- fl_tracts |>
-  left_join(diff_df, by = "GEOID")             # diff_df is now plain data
-
-# --- 3. Plot ----------------------------------------------------------
-ggplot(fl_tracts_diff) +
-  geom_sf(aes(fill = diff_paid_2021),
-          color = NA, linewidth = 0) +
-  scale_fill_gradient2(
-    name = "Δ Avg. Paid\n(2021 $)",
-    low  = muted("blue"), mid = "white", high = muted("red"),
-    midpoint = 0,
-    labels = label_dollar()
-  ) +
-  labs(
-    title    = "Change in Average NFIP Total Paid per Census Tract",
-    subtitle = "Mean of 2019-23 window minus mean of 1983-87 window (2021 dollars)",
-    caption  = "Source: NFIP claims; tract shapes: TIGER/Line 2020"
-  ) +
-  theme_minimal() +
-  theme(panel.grid.major = element_blank(),
-        axis.title       = element_blank())
+# ---------------------------------------------------
+# ----------------- POLICIES ------------------------
+# ---------------------------------------------------
+policies_x = policies %>% 
+  rename(policies_count = policyCount,
+         buildings_coverage = totalBuildingInsuranceCoverage,
+         contents_coverage = totalContentsInsuranceCoverage,
+         tract = censusTract) %>% 
+  mutate(total_coverage = buildings_coverage + contents_coverage) %>% 
+  mutate(policyeffective_year = year(ymd(policyEffectiveDate))) %>% 
+  dplyr::select(tract, policies_count, policyeffective_year, buildings_coverage, contents_coverage, total_coverage)
 
 
-### b y zip 
-library(tidycensus)
-# 1. Florida ZCTA (ZIP) polygons -------------------------------------
-options(tigris_use_cache = TRUE)
 
-# 1. Get all ZCTA geometries (nationwide)
-zips_all <- zctas(year = 2021)
+# Join to claims data and adjust for inflation
+policies_adj <- policies_x %>%
+  left_join(cpi_df, by = "policyeffective_year") %>%
+  mutate(cpi_2025 = 318.000,
+         inflation_factor = cpi_2025 / cpi,
+         total_coverage_2025 = total_coverage * inflation_factor)
 
-# 2. Get Florida state boundary
-fl_state <- states(cb = TRUE, year = 2020) %>%
-  filter(STUSPS == "FL") %>%
-  st_transform(st_crs(zips_all))
+policies_adj$total_coverage_2025 <- round(policies_adj$total_coverage_2025)
 
-# 3. Spatial filter: keep only ZCTAs that intersect Florida
-fl_zips <- st_filter(zips_all, fl_state)
-
-zip_id = "ZCTA5CE20"
-
-fl_zips = st_transform(fl_zips, st_crs(claims_fl))
-# 2. Spatial join: each claim gets its ZIP ---------------------------
-claims_fl_zip <- st_join(claims_sf, fl_zips[zip_id]) |>
-  filter(!is.na(.data[[zip_id]]))               # drop claims that miss a ZIP
-
-# 3. Define the time windows -----------------------------------------
-claims_zip_win <- claims_fl_zip |>
-  filter(year %in% c(1983:1987, 2019:2023)) |>
-  mutate(window = case_when(
-    year %in% 1983:1987 ~ "1985_5yr",
-    year %in% 2019:2023 ~ "2021_5yr"
-  ))
-
-# 4. Average $ and count per ZIP & window ----------------------------
-avg_zip <- claims_zip_win |>
-  group_by(.data[[zip_id]], window) |>
-  summarise(
-    avg_total_paid = mean(total_paid,  na.rm = TRUE),
-    avg_claims_cnt = mean(claims_count, na.rm = TRUE),
+policies_adj$tract = str_pad(policies_adj$tract, pad = "0", width = 11)
+policies_summary <- policies_adj %>%
+  group_by(tract, policyeffective_year) %>%
+  summarize(
+    policies_count = sum(policies_count, na.rm = TRUE),
+    buildings_coverage = sum(buildings_coverage, na.rm = TRUE),
+    contents_coverage = sum(contents_coverage, na.rm = TRUE),
+    total_coverage_2025 = sum(total_coverage_2025, na.rm = TRUE),
     .groups = "drop"
   )
 
-# 5. Inflate the older $$ to 2021 dollars ----------------------------
-avg_zip_adj <- avg_zip |>
-  mutate(avg_total_paid_2021 = if_else(window == "1985_5yr",
-                                       avg_total_paid * 2.52,   # CPI factor
-                                       avg_total_paid),
-         avg_claims_cnt_2021 = avg_claims_cnt)
+# Save summarized data
+saveRDS(policies_summary, "NFIP\\Policies")
 
-# 6. Pivot wider & compute difference -------------------------------
-diff_zip <- avg_zip_adj |>
-  dplyr::select(all_of(zip_id), window, avg_total_paid_2021) |>
-  pivot_wider(names_from  = window,
-              values_from = avg_total_paid_2021) |>
-  mutate(diff_paid_2021 = `2021_5yr` - `1985_5yr`) |>
-  st_drop_geometry()                             # ordinary data frame
 
-# 7. Join attributes onto ZCTA shapes --------------------------------
-fl_zips_diff <- fl_zips |>
-  left_join(diff_zip, by = setNames(zip_id, zip_id))  # keyed on ZIP
+claims_final = claims_final %>% 
+  left_join(policies_summary, by = c("tract", "claim_year" = "policyeffective_year"))
 
-# 8. Map --------------------------------------------------------------
-ggplot(fl_zips_diff) +
-  geom_sf(aes(fill = diff_paid_2021), color = NA, linewidth = 0) +
-  scale_fill_gradient2(
-    name = "Δ Avg. Paid\n(2021 $)",
-    low = muted("blue"), mid = "white", high = muted("red"),
-    midpoint = 0, labels = label_dollar()
-  ) +
-  labs(
-    title    = "Change in Average NFIP Total Paid per ZIP (ZCTA)",
-    subtitle = "Mean of 2019-23 window minus mean of 1983-87 window (2021 dollars)",
-    caption  = "Source: NFIP claims; ZCTA shapes: TIGER/Line 2020"
-  ) +
-  theme_minimal() +
-  theme(panel.grid.major = element_blank(),
-        axis.title       = element_blank())
+claims_final <- claims_final %>%
+  tidyr::separate_rows(banks_upstream, sep = ";") 
+
+claims_final = claims_final %>% 
+  dplyr::select(-c(buildings_coverage, contents_coverage))
+
+saveRDS(claims_final, "NFIP/nfipbankdata.rds")
+
