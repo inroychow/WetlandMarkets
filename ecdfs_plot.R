@@ -287,21 +287,11 @@ ecdf_summary <- results_long_normalized %>%
 newlabs=c("Flood Protection: Housing Units","Flood Protection: Housing Values", "Flood Protection: Population")
 names(newlabs)=c("normalized_loss_units","normalized_loss_values", "normalized_loss_population")
 
-a=ggplot(
-  results_long_normalized,
-  aes(x = x, y = y,group=unit,lwd=n_obs,col=comparison)) + geom_line(alpha=0.2)+
-  geom_vline(xintercept = 1, linetype = "dashed") + geom_line(data=ecdf_summary,aes(x=x,y=mean_y),col="black",inherit.aes=FALSE)+
-  scale_x_log10() + facet_wrap(~comparison, labeller=labeller(comparison=newlabs))+labs(y="Cumulative Density",x="Value Relative to Bank Mean")+
-  theme_bw()+scale_linewidth_continuous(guide="none")+scale_color_discrete(guide="none")+theme(strip.background =element_rect(fill="white"))+
-  scale_x_log10(labels = scales::label_number())
-
-a
 # 1. Define the reference x-values
 ref_values <- c(1, 1.5, 2)
 
-# 2. Interpolate the mean CDF at each reference for each comparison
 crossings <- ecdf_summary %>%
-  # In case you have zero or negative x, remove them to avoid log-scale or approx issues
+ 
   filter(x > 0) %>%
   group_by(comparison) %>%
   summarize(
@@ -324,41 +314,14 @@ crossings <- ecdf_summary %>%
     ),
     percent_below = round(100 * cdf_value, 1),
     percent_above = round(100 * (1 - cdf_value), 1),
-    # Example label: "30% below\n70% above"
     label = paste0(percent_below, "% below\n", percent_above, "% above")
   )
 
-# 3. Add horizontal lines & labels to your existing plot ‘a’
-#    We anchor the left side at x = 0.1 for readability in log-scale plots:
+#  Add horizontal lines & labels to existing plot ‘a’
+#    anchor the left side at x = 0.1 for readability in log-scale plots:
 xmin_val <- min(results_long_normalized$x[results_long_normalized$x > 0], na.rm = TRUE)
 
-# Then update your plot:
-a +
-  geom_vline(
-    xintercept = 1,
-    linetype = "dashed",
-    color = "gray20"
-  ) +
-  geom_vline(
-    xintercept = 1.5,
-    linetype = "dashed",
-    color = "gray50"
-  ) +
-  geom_vline(
-    xintercept = 2,
-    linetype = "dashed",
-    color = "gray80"
-  ) +
-  geom_segment(
-    data = crossings,
-    aes(x = xmin_val, xend = ref_x, y = cdf_value, yend = cdf_value),
-    inherit.aes = FALSE,
-    linetype = "dashed",
-    color = "black"
-  ) +
-  scale_x_log10(labels = scales::label_number())
-
-# ---- Same plot but only housing untis -----
+# ---- Same plot but only housing units -----
 
 # Filter only housing unit rows
 results_hu <- results_long_normalized %>%
@@ -387,7 +350,7 @@ a_hu_improved <- ggplot(
   results_hu,
   aes(x = x, y = y, group = unit, lwd = n_obs)
 ) +
-  geom_line(alpha = 0.2, aes(color = "Big Cypress Mitigation Bank")) +  # label the raw lines+
+  geom_line(alpha = 0.2, aes(color = "Big Cypress Mitigation Bank")) +  # label the raw lines
   geom_line(data = ecdf_summary_hu, aes(x = x, y = mean_y, color = "Mean ECDF"), inherit.aes = FALSE, linewidth = 1) +
   
   # Vertical dashed lines from xmin to crossing point only
@@ -461,28 +424,28 @@ a_hu_improved <- ggplot(
 
 a_hu_improved 
 
-# Identify the thick line that has 10x higher value in SA than in bank ----
-
-# Get both x values at y=0.1 and y=0.9, then compute the steepness range
-find_steep_midrange <- function(df) {
-  if (n_distinct(df$y) < 2 || all(is.na(df$y))) return(tibble(x10 = NA, x90 = NA, range = NA))
-  x10 <- approx(df$y, df$x, xout = 0.1, rule = 2)$y
-  x90 <- approx(df$y, df$x, xout = 0.9, rule = 2)$y
-  tibble(x10 = x10, x90 = x90, range = x90 - x10)
-}
-
-candidates <- results_long_normalized %>%
-  filter(comparison == "normalized_loss_units") %>%
-  group_by(unit) %>%
-  group_modify(~ {
-    x_vals <- find_steep_midrange(.x)
-    x_vals$n_obs <- unique(.x$n_obs)
-    x_vals
-  }) %>%
-  filter(!is.na(x10), x10 > 5, x90 < 40) %>%
-  arrange(desc(n_obs), range)
-
-print(candidates)
+# # Identify the thick line that has 10x higher value in SA than in bank ----
+# 
+# # Get both x values at y=0.1 and y=0.9, then compute the steepness range
+# find_steep_midrange <- function(df) {
+#   if (n_distinct(df$y) < 2 || all(is.na(df$y))) return(tibble(x10 = NA, x90 = NA, range = NA))
+#   x10 <- approx(df$y, df$x, xout = 0.1, rule = 2)$y
+#   x90 <- approx(df$y, df$x, xout = 0.9, rule = 2)$y
+#   tibble(x10 = x10, x90 = x90, range = x90 - x10)
+# }
+# 
+# candidates <- results_long_normalized %>%
+#   filter(comparison == "normalized_loss_units") %>%
+#   group_by(unit) %>%
+#   group_modify(~ {
+#     x_vals <- find_steep_midrange(.x)
+#     x_vals$n_obs <- unique(.x$n_obs)
+#     x_vals
+#   }) %>%
+#   filter(!is.na(x10), x10 > 5, x90 < 40) %>%
+#   arrange(desc(n_obs), range)
+# 
+# print(candidates)
 
 highlight_unit <- "Big_Cypress_MB_Phase_I-V"
 
