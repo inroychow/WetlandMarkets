@@ -8,7 +8,7 @@ library(data.table)
 library(dplyr)
 
 #datadir = "your_directory"
-datadir="ECDF Functions"
+datadir="C:\\Users\\indumati\\Box\\Paper2_final"
 
 #get unique bank names
 names=list.files(paste0(datadir,"\\SA ECDF Functions"))
@@ -237,14 +237,46 @@ a
 
 results_long_normalized = read.csv(paste0(datadir,"\\normalized_ecdfs_loss.csv"))
 
-# Summary stats ---------
-summary_stats <- results_long_normalized %>%
-  group_by(comparison) %>%
-  summarize(
-    area_weighted_mean = weighted.mean(x, w = n_obs * (y - lag(y, default = 0))),  # ECDF: weight by area of each increment
-    max_ratio = max(x, na.rm = TRUE)
-  )
-summary_stats
+# Highest number of loss cells:
+loss_cell_counts <- results_long_normalized %>%
+  filter(comparison == "normalized_loss_units") %>%
+  group_by(unit) %>%
+  slice(1) %>%             # take the first row per unit
+  ungroup() %>%
+  dplyr::select(unit, n_obs) %>%
+  arrange(desc(n_obs))
+loss_cell_counts
+######## cutoff thresholds  ------------------
+
+# Thresholds 
+cut_pts <- c(`gt1` = 1, `gte1.5` = 1.5, `gte2` = 2, `gt10` = 10)
+
+# Function: 1 - ECDF(threshold)
+tail_share <- function(df, threshold) {
+  1 - approx(x = df$x, y = df$y, xout = threshold, rule = 2)$y
+}
+
+# filter and group by unit
+shares_per_unit <- results_long_normalized %>%
+  filter(comparison == "normalized_loss_units") %>%
+  group_by(unit) %>%
+  group_map(~ {
+    # .x is the data for one unit
+    # Apply tail_share to each threshold
+    shares <- sapply(cut_pts, function(thresh) tail_share(.x, thresh))
+    as.data.frame(as.list(shares * 100))  # convert to percentage
+  }) %>%
+  bind_rows()
+
+# take the average across all units
+overall <- shares_per_unit %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+overall
+
+# ------------------------
+
+
 # ------------------------
 
 ecdf_summary <- results_long_normalized %>%
@@ -336,7 +368,6 @@ results_hu <- results_long_normalized %>%
 ecdf_summary_hu <- results_hu %>%
   group_by(x, comparison) %>%
   summarize(mean_y = weighted.mean(y, w = n_obs), .groups = "drop")
-
 big_cypress_line <- results_hu %>% filter(unit == "Big_Cypress_MB_Phase_I-V")
 
 big_cypress_label_point <- big_cypress_line %>%
@@ -428,7 +459,48 @@ a_hu_improved <- ggplot(
   ) +
   scale_linewidth_continuous(guide = "none")
 
-a_hu_improved
+a_hu_improved 
+
+# Identify the thick line that has 10x higher value in SA than in bank ----
+
+# Get both x values at y=0.1 and y=0.9, then compute the steepness range
+find_steep_midrange <- function(df) {
+  if (n_distinct(df$y) < 2 || all(is.na(df$y))) return(tibble(x10 = NA, x90 = NA, range = NA))
+  x10 <- approx(df$y, df$x, xout = 0.1, rule = 2)$y
+  x90 <- approx(df$y, df$x, xout = 0.9, rule = 2)$y
+  tibble(x10 = x10, x90 = x90, range = x90 - x10)
+}
+
+candidates <- results_long_normalized %>%
+  filter(comparison == "normalized_loss_units") %>%
+  group_by(unit) %>%
+  group_modify(~ {
+    x_vals <- find_steep_midrange(.x)
+    x_vals$n_obs <- unique(.x$n_obs)
+    x_vals
+  }) %>%
+  filter(!is.na(x10), x10 > 5, x90 < 40) %>%
+  arrange(desc(n_obs), range)
+
+print(candidates)
+
+highlight_unit <- "Big_Cypress_MB_Phase_I-V"
+
+df_highlight <- results_long_normalized %>%
+  filter(unit == highlight_unit, comparison == "normalized_loss_units")
+
+a_hu_improved +
+  geom_line(data = df_highlight, aes(x = x, y = y), color = "black", size = 1.5) +
+  ggtitle("ECDF Plot with Big_Cypress_MB_Phase_I-V Highlighted")
+
+# Check median??
+
+median(df_highlight$x)
+
+
+
+
+
 
 # ---------- Same plot but HV and POP ------
 results_hv_pop <- results_long_normalized %>%
@@ -473,164 +545,4 @@ a_hv_pop
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
-# Identify the thick line that has 10x higher value in SA than in bank.
-
-# Get both x values at y=0.1 and y=0.9, then compute the steepness range
-find_steep_midrange <- function(df) {
-  if (n_distinct(df$y) < 2 || all(is.na(df$y))) return(tibble(x10 = NA, x90 = NA, range = NA))
-  x10 <- approx(df$y, df$x, xout = 0.1, rule = 2)$y
-  x90 <- approx(df$y, df$x, xout = 0.9, rule = 2)$y
-  tibble(x10 = x10, x90 = x90, range = x90 - x10)
-}
-
-candidates <- results_long_normalized %>%
-  filter(comparison == "normalized_loss_units") %>%
-  group_by(unit) %>%
-  group_modify(~ {
-    x_vals <- find_steep_midrange(.x)
-    x_vals$n_obs <- unique(.x$n_obs)
-    x_vals
-  }) %>%
-  filter(!is.na(x10), x10 > 5, x90 < 40) %>%
-  arrange(desc(n_obs), range)
-
-print(candidates)
-
-highlight_unit <- "Big_Cypress_MB_Phase_I-V"
-
-df_highlight <- results_long_normalized %>%
-  filter(unit == highlight_unit, comparison == "normalized_loss_units")
-
-a +
-  geom_line(data = df_highlight, aes(x = x, y = y), color = "black", size = 1.5) +
-  ggtitle("Full ECDF Plot with Big_Cypress_MB_Phase_I-V Highlighted")
-
-#############
-
-
-# A  helper that uses 'approx()' to get the ECDF value at x_value
-get_fraction_below <- function(d, x_value = 1) {
-  approx(d$x, d$y, xout = x_value, rule = 2)$y
-}
-
-summary_ratio <- results_long_normalized %>%
-  # group by the unit and the comparison (units vs values)
-  group_by(unit, comparison) %>%
-  # For each group, compute fraction of distribution below 1, 1.5, and 2
-  summarize(
-    frac_below_1   = get_fraction_below(cur_data(), 1),
-    frac_below_1_5 = get_fraction_below(cur_data(), 1.5),
-    frac_below_2   = get_fraction_below(cur_data(), 2),
-    # Keep the number of underlying observations for reference
-    n_obs = unique(n_obs),
-    .groups = "drop"
-  )
-
-
-head(summary_ratio)
-
-# Find cases where around 50% of all the wetland loss in the service area had a value less than the bank mean, and 50% had more.
-equal_case_studies <- summary_ratio %>%
-  filter(
-    comparison == "normalized_loss_units",  # use 'units' or 'values' as desired
-    frac_below_1 > 0.45,
-    frac_below_1 < 0.55,
-    frac_below_2 > 0.9
-  ) %>%
-  arrange(frac_below_1) # Big_Bullfrog_Creek_MB has high n_obs
-
-equal_value_case_studies <- summary_ratio %>%
-  filter(
-    comparison == "normalized_loss_values",
-    frac_below_1 > 0.45,
-    frac_below_1 < 0.55,
-    frac_below_2 > 0.9
-  ) # Rosedale_Mitigation_Bank has high n_obs 
-
-head(equal_value_case_studies)
-
-
-# Highest fraction below 1 -------> Lost wetlands are mostly less valuable than bank mean
-case_studies_high <- summary_ratio %>%
-  filter(comparison == "normalized_loss_units", frac_below_1 == 1) %>%
-  arrange(frac_below_1_5, frac_below_2) %>% 
-  slice_head(n=50)
-
-# Lowest fraction below 1 --------> Lost wetlands are mostly more valuable than bank mean
-case_studies_low <- summary_ratio %>%
-  filter(comparison == "normalized_loss_units") %>%
-  arrange(frac_below_1, frac_below_1_5, frac_below_2) %>%
-  slice_head(n = 50)
-
-case_studies_high
-case_studies_low
-
-# Compare case studies, Granger and Middle Yellowstone
-
-ggplot(
-  results_long_normalized %>% filter(unit %in% c("Granger", "Big_Cypress_MB_Phase_I-V")),
-  aes(x = x, y = y, color = unit)
-) +
-  geom_line() +
-  scale_x_log10() +
-  facet_wrap(~comparison) +
-  geom_vline(xintercept = 1, linetype = "dashed") +
-  labs(title = "ECDF Comparison", x = "Wetland Loss / Bank Mean", y = "Cumulative %")
-
-
-################### selecting another case study #####################
-
-loss_obs <- summary_ratio %>%
-  filter(comparison == "normalized_loss_units") %>%
-  select(unit, n_obs)
-
-################# Getting relevant summary stats for results graphic:
-
-library(purrr)     # map_* helpers
-library(tibble)    # tidy frames
-library(dplyr)     # summarise
-library(glue)      # for the final sentence
-
-# ── 1.  Collect mean flood-protection values for every bank ────────────────────
-ratio_df <- map_dfr(names, function(nm) {
-  bank_pth <- sprintf("%s\\Bank ECDF Functions\\bank_ecdf_fn_%s.rds", datadir, nm)
-  loss_pth <- sprintf("%s\\SA ECDF Functions - Loss\\ecdf_fn_%s.rds", datadir, nm)
-  
-  if (!file.exists(bank_pth) || !file.exists(loss_pth)) return(NULL)
-  
-  bank_ecdf <- readRDS(bank_pth)$housing_units
-  loss_ecdf <- readRDS(loss_pth)$housing_units
-  
-  # raw samples that the ECDFs were built from
-  bank_x  <- environment(bank_ecdf)$x
-  loss_x  <- environment(loss_ecdf)$x
-  
-  tibble(
-    unit       = nm,
-    mean_bank  = mean(bank_x,  na.rm = TRUE),
-    mean_loss  = mean(loss_x,  na.rm = TRUE),
-    ratio_mean = mean_loss / mean_bank
-  )
-})
-
-# ── 2.  Pull summary statistics you want to quote ─────────────────────────────
-avg_ratio <- mean(ratio_df$ratio_mean, na.rm = TRUE)   # “on average …”
-max_ratio <- max(ratio_df$ratio_mean,  na.rm = TRUE)   # “up to …”
-
-# If you’d rather quote something less extreme than the max (e.g. 95th pct):
-p95_ratio <- quantile(ratio_df$ratio_mean, 0.95, na.rm = TRUE)
-
-# ── 3.  Produce the sentence with the real numbers ────────────────────────────
-final_sentence <- glue(
-  "Wetlands lost to development tend to be near previously developed areas and ",
-  "therefore provide relatively high levels of downstream flood protection ",
-  "compared with wetlands created in compensation – on average about ",
-  "{round(avg_ratio, 1)}× as much, with some cases reaching ",
-  "{round(max_ratio, 1)}×."
-)
-
-cat(final_sentence)
-
-
-
+############
