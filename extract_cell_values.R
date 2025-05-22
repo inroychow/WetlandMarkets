@@ -11,8 +11,8 @@ setwd("C:/Users/indumati/Box/Paper2_final")
 
 
 # Paths
-raster_folder <- "Mosaics"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions/Extract Service Areas"
+raster_folder <- "Service Area Mosaics"  # Folder where service area TIFFs are stored
+output_folder <- "Extractions and Summaries/Extract Service Areas"
 
 # Ensure output directory exists
 if (!dir.exists(output_folder)) {
@@ -100,13 +100,15 @@ message("Service area extraction complete. All files saved in: ", output_folder)
 #---------------------------------------------------------#
 
 # Paths
-raster_folder <- "Mosaics"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions/Extract Banks"
+raster_folder <- "Service Area Mosaics"  # Folder where service area TIFFs are stored
+output_folder <- "Extractions and Summaries/Extract Banks"
 
 # Load datasets
 banks <- readRDS("Bank Footprints/footprints_and_buffers.rds")
-
 sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
+  # rows_to_update <- which(sas$ID %in% c("Three_Lakes_Regional_MB_FDOT_", "FP_L_Everglades_Phase_II_MB"))
+  # sas$ID[rows_to_update] <- c("FP_AndL_Everglades_Phase_II_MB", "Three_Lakes_Regional_MB_FDOT")
+
 
 # Function to sanitize names
 sanitize_name <- function(name) {
@@ -175,10 +177,10 @@ message("Bank extraction complete. All files saved in: ", output_folder)
 
 # Paths
 raster_folder <- "CONUS\\Service Area Mosaics 2021"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions/Extract Banks 2021"
+output_folder <- "Extractions and Summaries/Extract Banks"
 
 # Load datasets
-outlier_banks <- readRDS("Footprints/outlier_banks.rds")
+outlier_banks <- readRDS("Bank Footprints/outlier_banks.rds")
 
 sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
 
