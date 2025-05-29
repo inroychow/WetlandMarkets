@@ -8,7 +8,7 @@ library(data.table)
 library(dplyr)
 
 #datadir = "your_directory"
-datadir="C:\\Users\\indumati\\Box\\Paper2_final"
+datadir="C:\\Users\\indumati\\Box\\ECDF Functions"
 
 #get unique bank names
 names=list.files(paste0(datadir,"\\SA ECDF Functions"))
@@ -154,16 +154,20 @@ process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfi
   # Extract raw values
   bank_vals  <- environment(bank_data$housing_units)$x
   bank_hval  <- environment(bank_data$housing_value)$x
+  bank_pop   <- environment(bank_data$population)$x
   loss_vals  <- environment(loss_data$housing_units)$x
   loss_hval  <- environment(loss_data$housing_value)$x
+  loss_pop   <- environment(loss_data$population)$x
   
   # Compute means
   bank_mean_vals <- mean(bank_vals, na.rm = TRUE)
   bank_mean_hval <- mean(bank_hval, na.rm = TRUE)
+  bank_mean_pop <- mean(bank_pop, na.rm = TRUE)
   
   # Normalize accordingly
   loss_vals_norm <- loss_vals / bank_mean_vals
   loss_hval_norm <- loss_hval / bank_mean_hval
+  loss_pop_norm <- loss_pop / bank_mean_pop
   
   n_obs <- length(loss_vals_norm)
   
@@ -172,11 +176,13 @@ process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfi
     sampled_indices <- sample(seq_len(n_obs), 1e5)
     loss_vals_norm <- loss_vals_norm[sampled_indices]
     loss_hval_norm <- loss_hval_norm[sampled_indices]
+    loss_pop_norm <- loss_pop_norm[sampled_indices]
   }
   
   # Evaluate ECDFs
   ecdf_vals  <- ecdf(loss_vals_norm)
   ecdf_hvals <- ecdf(loss_hval_norm)
+  ecdf_pop <- ecdf(loss_pop_norm)
   
   # Output both sets as tibbles
   result_units <- tibble(
@@ -195,10 +201,18 @@ process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfi
     n_obs = n_obs
   )
   
+  result_pop <- tibble(unit = unit_name,
+                       comparison = "normalized_pop_values",
+                       x = x_grid,
+                       y = ecdf_pop(x_grid),
+                       n_obs = n_obs
+  )
+    
+  
   # Return combined result
-  bind_rows(result_units, result_values)
+  bind_rows(result_units, result_values, result_pop)
 }
-plan(multisession)  # or sequential/multicore/etc.
+plan(multisession, workers = 3)  # or sequential/multicore/etc.
 handlers("txtprogressbar")  # or "progress" for shiny/fancier
 
 with_progress({
@@ -213,7 +227,7 @@ with_progress({
 results_long <- Filter(Negate(is.null), results_long)
 results_long_normalized <- bind_rows(results_long)
 
-fwrite(results_long_normalized,file=paste0(datadir,"\\normalized_ecdfs_loss.csv"))
+fwrite(results_long_normalized,file=paste0(datadir,"\\normalized_ecdfs_loss_5.22.csv"))
 
 ecdf_summary <- results_long_normalized %>%
   group_by(x,comparison) %>%
@@ -222,7 +236,7 @@ ecdf_summary <- results_long_normalized %>%
   )
 
 newlabs=c("Flood Protection: Housing Units","Flood Protection: Housing Values", "Flood Protection: Population")
-names(newlabs)=c("normalized_loss_units","normalized_loss_values", "normalized_loss_population")
+names(newlabs)=c("normalized_loss_units","normalized_loss_values", "normalized_pop_values")
 
 a=ggplot(
   results_long_normalized,
@@ -464,48 +478,121 @@ median(df_highlight$x)
 
 
 
-
 # ---------- Same plot but HV and POP ------
 results_hv_pop <- results_long_normalized %>%
-  filter(comparison %in% c("normalized_loss_values", "normalized_loss_population"))
+  filter(comparison %in% c("normalized_loss_values", "normalized_pop_values"))
 
 # Recalculate ecdf_summary for hv and pop 
 ecdf_summary_hv_pop <- results_hv_pop %>%
   group_by(x, comparison) %>%
   summarize(mean_y = weighted.mean(y, w = n_obs), .groups = "drop")
 
-a_hv_pop <- ggplot(
-  results_hv_pop,
-  aes(x = x, y = y, group = unit, lwd = n_obs, col = comparison)
-) +
-  geom_line(alpha = 0.2) +
-  geom_line(data = ecdf_summary_hv_pop, aes(x = x, y = mean_y), col = "black", inherit.aes = FALSE) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "gray20") +
-  geom_vline(xintercept = 1.5, linetype = "dashed", color = "gray50") +
-  geom_vline(xintercept = 2, linetype = "dashed", color = "gray80") +
+a_hv_pop_improved <- ggplot(
+  results_hv_pop, 
+  aes(x = x, y = y, group = unit, lwd = n_obs)
+) + 
+  geom_line(aes(color = comparison), alpha = 0.2) + 
+  geom_line(
+    data = ecdf_summary_hv_pop, 
+    aes(x = x, y = mean_y, color = "Mean ECDF"), 
+    inherit.aes = FALSE,
+    linewidth = 1
+  ) + 
+  
+  # Vertical dashed lines at fixed values
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray20", linewidth = 0.5) + 
+  geom_vline(xintercept = 1.5, linetype = "dashed", color = "gray50", linewidth = 0.5) + 
+  geom_vline(xintercept = 2, linetype = "dashed", color = "gray80", linewidth = 0.5) + 
+  
+  # Horizontal dashed segments
   geom_segment(
-    data = crossings %>% filter(comparison %in% c("normalized_loss_values", "normalized_loss_population")),
-    aes(x = xmin_val, xend = ref_x, y = cdf_value, yend = cdf_value),
+    data = crossings %>% filter(comparison %in% c("normalized_loss_values", "normalized_pop_values")),
+    aes(x = xmin_val, xend = ref_x, y = cdf_value, yend = cdf_value, color = comparison),
     inherit.aes = FALSE,
     linetype = "dashed",
-    color = "black"
-  )+
-  facet_wrap(~comparison, labeller = labeller(comparison = newlabs)) +
-  labs(y = "Cumulative Density", x = "Value Relative to Bank Mean") +
-  scale_x_log10(labels = scales::label_number()) +
-  theme_bw() +
-  scale_linewidth_continuous(guide = "none") +
+    linewidth = 0.5
+  ) +
+  
+  facet_wrap(~comparison, labeller = labeller(comparison = newlabs)) + 
+  
+  labs(y = "Cumulative Density", x = "Value Relative to Bank Mean") + 
+  
+  scale_x_log10(
+    breaks = c(0.1, 1, 1.5, 2, 10, 100, 1000),
+    labels = c("0.1", "1", "1.5", "2", "10", "100", "1000"),
+    expand = c(0, 0)
+  ) + 
+  scale_y_continuous(expand = c(0, 0)) +
+  
+  theme_bw(base_size = 14) + 
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    strip.text = element_text(size = 14),
+    strip.background = element_blank(),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  
   scale_color_manual(
     values = c(
-      "normalized_loss_population" = "#00BA38",   # ggplot2 default green
-      "normalized_loss_values" = "#619CFF"         # ggplot2 default blue
+      "normalized_pop_values" = "#00BA38",     # green
+      "normalized_loss_values" = "#619CFF",    # blue
+      "Mean ECDF" = "black"
     ),
     guide = "none"
-  )+
-  theme(strip.background = element_rect(fill = "white"))
+  ) +
+  
+  scale_linewidth_continuous(guide = "none")
 
-a_hv_pop
+a_hv_pop_improved
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+a_hu_improved
 
-############
+
+
+## AREA WEIGHTED DIFFERENCE AND MAX VALUES ##
+
+# ----------  Build one light-weight summary row per mitigation bank ----------
+library(dplyr)
+library(glue)
+library(purrr)
+library(tibble)
+
+ratio_df <- map_dfr(names, function(nm) {
+  bank_pth <- file.path(datadir, "Bank ECDF Functions",      paste0("bank_ecdf_fn_", nm, ".rds"))
+  loss_pth <- file.path(datadir, "SA ECDF Functions - Loss", paste0("ecdf_fn_",    nm, ".rds"))
+  if (!file.exists(bank_pth) || !file.exists(loss_pth)) return(NULL)
+  
+  bank_vals <- environment(readRDS(bank_pth)$housing_units)$x
+  loss_vals <- environment(readRDS(loss_pth)$housing_units)$x
+  
+  tibble(
+    unit        = nm,
+    mean_bank   = mean(bank_vals,  na.rm = TRUE),
+    mean_loss   = mean(loss_vals,  na.rm = TRUE),
+    n_pixels    = length(loss_vals)
+  )
+}) %>%
+  ## drop pathological or empty cases up-front
+  filter(is.finite(mean_bank), mean_bank > 0,
+         is.finite(mean_loss),  mean_loss > 0) %>%
+  mutate(ratio_mean = mean_loss / mean_bank)     # safe now
+
+# ---------- Aggregate across banks with area (loss) weighting ----------------------
+area_weighted_avg <- with(ratio_df, weighted.mean(ratio_mean, w = n_pixels, na.rm = TRUE))
+max_ratio         <- max(ratio_df$ratio_mean,  na.rm = TRUE)          # most extreme bank-level case
+p95_ratio         <- quantile(ratio_df$ratio_mean, 0.95, na.rm = TRUE)  # “typical high end” 
+
+cat(glue(
+  "Wetlands lost to development tend to be near previously developed areas and ",
+  "therefore deliver higher downstream flood-protection value than the wetlands ",
+  "created to compensate for them – on average about ",
+  "{round(area_weighted_avg, 1)}× as much when weighted by the area of loss, ",
+  "with some banks showing ratios as high as {round(max_ratio, 1)}×."
+))
+
+
