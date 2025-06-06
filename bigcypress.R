@@ -409,28 +409,40 @@ df_all$variable <- factor(df_all$variable,
 
 # Plot: Only Loss vs Service Area if Bank is missing
 
-
-ggplot(df_hu, aes(x = value, y = ecdf, color = source)) +
-  geom_line(size = 1.5) +
-  scale_x_continuous(labels = comma) +
-  scale_color_discrete(
+library(scales)
+ecdfplot_hu = ggplot(df_hu, aes(x = value, y = ecdf, color = source)) +
+  geom_line(linewidth = 1.2) +
+  scale_x_continuous(
+    limits = c(0, 120000), 
+    labels = comma,
+    expand = c(0,0)
+  ) +
+  scale_color_manual(
+    values = c("Loss" = "red", "Service Area" = "blue", "Bank" = "#00BA38"),
     labels = c(
       "Bank" = "Bank",
       "Service Area" = "Remaining Service Area (2021)",
       "Loss" = "Service Area Loss (1985–2021)"
-    )
+    ),
+    name = ""
   ) +
   labs(
-    title = "Downstream Housing Units of Wetlands – ECDF by Area",
-    subtitle = "Big Cypress Wetland Mitigation Bank",
-    x = "Downstream Housing Units", y = "Cumulative Probability",
-    color=NULL
-    
+    title = "Big Cypress Wetland Mitigation Bank",
+    x = "Downstream Housing Units",
+    y = "Cumulative Probability"
   ) +
-  theme_minimal(base_size = 13) +
-  theme(legend.position = "right",
-        plot.title = element_text(hjust = 0.5),
-        plot.subtitle = element_text(hjust = 0.5))
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 20),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 20),
+    plot.title = element_text(size = 25, hjust = 0.5),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 50, b = 10, l = 10))  # increase left/right margins
+
+ecdfplot_hu
 
 
 # HV ---
