@@ -1,0 +1,29 @@
+\begin{table}
+\centering
+\begin{talltblr}[         %% tabularray outer open
+entry=none,label=none,
+note{}={+ p < 0.1, * p < 0.05, ** p < 0.01, *** p < 0.001},
+]                     %% tabularray outer close
+{                     %% tabularray inner open
+colspec={Q[]Q[]Q[]Q[]Q[]},
+column{1}={halign=l,},
+column{2}={halign=c,},
+column{3}={halign=c,},
+column{4}={halign=c,},
+column{5}={halign=c,},
+hline{8}={1,2,3,4,5}{solid, 0.05em, black},
+}                     %% tabularray inner close
+\toprule
+& Simple Model, Binary & Simple Model, Flood Damage & Full Model, Binary & Full Model, Flood Damage \\ \midrule %% TinyTableHeader
+Log Lost Flood Protection/n(Housing Value)            & \num{0.322}     & \num{0.005}*** & \num{0.549}     & \num{0.007}***  \\
+& (\num{0.320})   & (\num{0.001})  & (\num{0.548})   & (\num{0.001})   \\
+Bank Median-Loss Median                               &                  &                 & \num{-4.155}    & \num{0.178}***  \\
+&                  &                 & (\num{4.557})   & (\num{0.047})   \\
+Log Lost Flood Protection*/n(Bank Median-Loss Median) &                  &                 & \num{0.127}     & \num{-0.005}*** \\
+&                  &                 & (\num{0.140})   & (\num{0.001})   \\
+Num.Obs.                                              & \num{1380}      & \num{1370}     & \num{963}       & \num{954}       \\
+R2 Adj.                                               & \num{0.049}     & \num{0.012}    & \num{0.110}     & \num{0.015}     \\
+RMSE                                                  & \num{1.55}      & \num{0.22}     & \num{2.30}      & \num{0.25}      \\
+\bottomrule
+\end{talltblr}
+\end{table}
