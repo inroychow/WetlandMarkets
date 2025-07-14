@@ -65,63 +65,6 @@ saveRDS(bank_summary, "Extractions and Summaries/Summaries Banks/bank_summary.rd
 
 
 # ---------------------------------------------- #
-# ------------- ECDF banks ----------------------# 
-# ---------------------------------------------- #
-
-ecdf_banks <- bank_summary %>%
-  group_by(bank_name) %>%
-  summarise(
-    # Standard stats
-    ecdf_housing_units = list({
-      valid_values <- na.omit(housing_units)  # Remove NAs
-      if (length(valid_values) > 0) {
-        f <- ecdf(valid_values)
-        tibble(
-          housing_units_value = sort(unique(valid_values)),
-          ecdf = f(sort(unique(valid_values)))
-        )
-      } else {
-        tibble(housing_units_value = numeric(0), ecdf = numeric(0))  # Empty tibble
-      }
-    }),
-    
-    ecdf_housing_value = list({
-      valid_values <- na.omit(housing_value)
-      if (length(valid_values) > 0) {
-        f <- ecdf(valid_values)
-        tibble(
-          housing_value_value = sort(unique(valid_values)),
-          ecdf = f(sort(unique(valid_values)))
-        )
-      } else {
-        tibble(housing_value_value = numeric(0), ecdf = numeric(0))
-      }
-    }),
-    
-    ecdf_population = list({
-      valid_values <- na.omit(population)
-      if (length(valid_values) > 0) {
-        f <- ecdf(valid_values)
-        tibble(
-          population_value = sort(unique(valid_values)),
-          ecdf = f(sort(unique(valid_values)))
-        )
-      } else {
-        tibble(population_value = numeric(0), ecdf = numeric(0))
-      }
-    }),
-    
-    
-    cell_count = n(),
-    .groups = "drop"
-  )
-saveRDS(bank_summary, "Extractions and Summaries/Summaries Banks/bank_ecdf.rds")
-
-
-
-
-
-# ---------------------------------------------- #
 # ------------- Summarize SAs - -----------------# 
 # ---------------------------------------------- #
 

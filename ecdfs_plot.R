@@ -262,31 +262,29 @@ loss_cell_counts <- results_long_normalized %>%
 loss_cell_counts
 ######## cutoff thresholds  ------------------
 
-# Thresholds 
 cut_pts <- c(`gt1` = 1, `gte1.5` = 1.5, `gte2` = 2, `gt10` = 10)
 
-# Function: 1 - ECDF(threshold)
+# helper function: 1 - ECDF(threshold)
 tail_share <- function(df, threshold) {
   1 - approx(x = df$x, y = df$y, xout = threshold, rule = 2)$y
 }
 
-# filter and group by unit
+# compute tail shares per unit
 shares_per_unit <- results_long_normalized %>%
   filter(comparison == "normalized_loss_units") %>%
   group_by(unit) %>%
-  group_map(~ {
-    # .x is the data for one unit
-    # Apply tail_share to each threshold
-    shares <- sapply(cut_pts, function(thresh) tail_share(.x, thresh))
-    as.data.frame(as.list(shares * 100))  # convert to percentage
+  group_modify(~{
+    unit_n <- max(.x$n_obs, na.rm = TRUE)
+    shares <- map_dbl(cut_pts, function(thresh) tail_share(.x, thresh))
+    tibble(n_obs = unit_n, !!!setNames(shares * 100, names(cut_pts)))
   }) %>%
-  bind_rows()
+  ungroup()
+# overall weighted mean
+overall_wtd <- shares_per_unit %>%
+  select(-unit) %>%
+  summarise(across(-n_obs, ~ weighted.mean(.x, w = n_obs, na.rm = TRUE)))
 
-# take the average across all units
-overall <- shares_per_unit %>%
-  summarise(across(everything(), mean, na.rm = TRUE))
 
-overall
 
 # ------------------------
 
