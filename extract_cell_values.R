@@ -1,39 +1,40 @@
+# --------------------------------------------------------
+#                   Packages & Setup
+# --------------------------------------------------------
 
 library(terra)
+library(sf)
+library(dplyr)
+library(future.apply)
+library(fst)
 library(progressr)
 library(data.table)
 
-setwd("C:/Users/indumati/Box/Paper2_final")
+# Base directory 
+datadir <- Sys.getenv("DATA_DIR", "C:/Users/indumati/Box/Paper2_final")
 
-# --------------------------------------------------------#
-#-                      Extraction - SA                  -#
-#---------------------------------------------------------#
+# Helper to build absolute paths quickly
+pth <- function(...) file.path(datadir, ...)
 
+# --------------------------------------------------------
+#             Extraction: Service Areas (SA)
+# --------------------------------------------------------
 
-# Paths
-raster_folder <- "Service Area Mosaics"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions and Summaries/Extract Service Areas"
+raster_folder <- pth("Service Area Mosaics")
+output_folder <- pth("Extractions and Summaries", "Extract Service Areas")
 
-# Ensure output directory exists
-if (!dir.exists(output_folder)) {
-  dir.create(output_folder, recursive = TRUE)
-}
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
-# Load service area dataset
-sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
+sas <- readRDS(pth("Service Areas", "ServiceAreas_agg.rds"))
 
-# Get list of already processed files
 existing_files <- list.files(output_folder, pattern = "^sa_extract_.*\\.rds$", full.names = FALSE)
-processed_sa_ids <- gsub("^sa_extract_(.*)\\.rds$", "\\1", existing_files)  # Extract service area IDs
-
-# Identify service areas that still need processing
+processed_sa_ids <- gsub("^sa_extract_(.*)\\.rds$", "\\1", existing_files)
 sas_to_process <- sas[!(sas$ID %in% processed_sa_ids), ]
 
 cat("Total service areas:", nrow(sas), "\n")
 cat("Already processed:", length(processed_sa_ids), "\n")
 cat("Remaining to process:", nrow(sas_to_process), "\n\n")
 
-# Exit early if everything is processed
 if (nrow(sas_to_process) == 0) {
   cat("All service areas have been processed. Exiting...\n")
   quit(save = "no")
@@ -42,204 +43,211 @@ if (nrow(sas_to_process) == 0) {
 handlers(global = TRUE)
 progressr::with_progress({
   p <- progressr::progressor(along = sas_to_process$ID)
-  
-  failed_services <- c()  # Store IDs of failed extractions
+  failed_services <- c()
   
   results <- lapply(1:nrow(sas_to_process), function(i) {
     service_area <- sas_to_process[i, ]
-    service_area_name <- service_area$ID
-    raster_path <- file.path(raster_folder, paste0(service_area_name, "_mosaic.tif"))
-    output_path <- file.path(output_folder, paste0("sa_extract_", service_area_name, ".rds"))
+    sa_id <- service_area$ID
+    raster_path <- file.path(raster_folder, paste0(sa_id, "_mosaic.tif"))
+    output_path <- file.path(output_folder, paste0("sa_extract_", sa_id, ".rds"))
     
-    p(sprintf("Processing: %s", service_area_name))
+    p(sprintf("Processing: %s", sa_id))
     
-    # Check if raster exists
     if (!file.exists(raster_path)) {
-      warning(sprintf("Raster not found for %s, skipping...", service_area_name))
-      failed_services <<- c(failed_services, service_area_name)
+      warning(sprintf("Raster not found for %s, skipping...", sa_id))
+      failed_services <<- c(failed_services, sa_id)
       return(NULL)
     }
     
-    # Load raster
     sa_raster <- rast(raster_path)
     
-    # Attempt extraction with error handling
     extracted_data <- tryCatch({
-      terra::extract(x = sa_raster, y = service_area, cells = TRUE)
+      terra::extract(sa_raster, service_area, cells = TRUE)
     }, error = function(e) {
-      warning(sprintf("Extraction failed for %s: %s", service_area_name, e$message))
-      failed_services <<- c(failed_services, service_area_name)
+      warning(sprintf("Extraction failed for %s: %s", sa_id, e$message))
+      failed_services <<- c(failed_services, sa_id)
       return(NULL)
     })
     
-    # Skip if extraction failed
     if (is.null(extracted_data)) return(NULL)
     
-    # Attach service area name
-    extracted_data$service_area_name <- service_area_name  
-    
-    # Save the extracted data
+    extracted_data$service_area_name <- sa_id
     saveRDS(extracted_data, output_path)
     
     return(extracted_data)
   })
   
-  # Write failed service area IDs to a log file
   if (length(failed_services) > 0) {
-    writeLines(failed_services, error_log)
-    message("Some extractions failed. Check ", error_log, " for details.")
+    writeLines(failed_services, pth("Logs", "extraction_failures_sa.txt"))
+    message("Some extractions failed. Check extraction_failures_sa.txt for details.")
   }
 })
 
 message("Service area extraction complete. All files saved in: ", output_folder)
 
+# --------------------------------------------------------
+#             Extraction: Banks (Standard)
+# --------------------------------------------------------
 
+raster_folder <- pth("Service Area Mosaics")
+output_folder <- pth("Extractions and Summaries", "Extract Banks")
 
-# --------------------------------------------------------#
-#-                      Extraction - BANK                -#
-#---------------------------------------------------------#
+banks <- readRDS(pth("Bank Footprints", "footprints_and_buffers.rds"))
+sas <- readRDS(pth("Service Areas", "ServiceAreas_agg.rds"))
 
-# Paths
-raster_folder <- "Service Area Mosaics"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions and Summaries/Extract Banks"
-
-# Load datasets
-banks <- readRDS("Bank Footprints/footprints_and_buffers.rds")
-sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
-  # rows_to_update <- which(sas$ID %in% c("Three_Lakes_Regional_MB_FDOT_", "FP_L_Everglades_Phase_II_MB"))
-  # sas$ID[rows_to_update] <- c("FP_AndL_Everglades_Phase_II_MB", "Three_Lakes_Regional_MB_FDOT")
-
-
-# Function to sanitize names
 sanitize_name <- function(name) {
-  name <- gsub("[^A-Za-z0-9_-]", "_", name)  # Replace non-alphanumeric characters with "_"
-  name <- gsub("_+", "_", name)  # Replace multiple "_" with a single "_"
-  name <- gsub("^_|_$", "", name)  # Remove leading or trailing "_"
+  name <- gsub("[^A-Za-z0-9_-]", "_", name)
+  name <- gsub("_+", "_", name)
+  name <- gsub("^_|_$", "", name)
   return(name)
 }
 
-# Apply name sanitization
 banks$Name <- sapply(banks$Name, sanitize_name)
-#saveRDS(banks, "Footprints/footprints_and_buffers.rds")
-
-# Filter banks to match those in service areas
 banks <- banks[banks$Name %in% sas$ID, ]
 
-# Create output directory if it doesn't exist
-if (!dir.exists(output_folder)) {
-  dir.create(output_folder, recursive = TRUE)
-}
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
-# Progress bar setup
 handlers(global = TRUE)
 progressr::with_progress({
   p <- progressr::progressor(along = banks$Name)
   
   results <- lapply(1:nrow(banks), function(i) {
-    test_bank <- banks[i, ]
-    test_bank_name <- test_bank$Name
-    raster_path <- file.path(raster_folder, paste0(test_bank_name, "_mosaic.tif"))
+    bank <- banks[i, ]
+    bank_name <- bank$Name
+    raster_path <- file.path(raster_folder, paste0(bank_name, "_mosaic.tif"))
     
-    p(sprintf("Processing: %s", test_bank_name))
+    p(sprintf("Processing: %s", bank_name))
     
-    # Check if raster exists
     if (!file.exists(raster_path)) {
-      warning(sprintf("Raster not found for %s, skipping...", test_bank_name))
+      warning(sprintf("Raster not found for %s, skipping...", bank_name))
       return(NULL)
     }
     
-    # Load raster
     sa_raster <- rast(raster_path)
+    extracted_data <- terra::extract(sa_raster, bank, cells = TRUE)
+    extracted_data$bank_name <- bank_name
     
-    # Extract values
-    extracted_data <- terra::extract(
-      x = sa_raster,
-      y = test_bank,  # Extract for the single bank polygon
-      cells = TRUE
-    )
-    
-    # Attach bank name
-    extracted_data$bank_name <- test_bank_name  
-    
-    # Save the extracted data
-    saveRDS(extracted_data, file.path(output_folder, paste0("bank_extract_", test_bank_name, ".rds")))
-    
+    saveRDS(extracted_data, file.path(output_folder, paste0("bank_extract_", bank_name, ".rds")))
     return(extracted_data)
   })
 })
 
 message("Bank extraction complete. All files saved in: ", output_folder)
 
+# --------------------------------------------------------
+#             Extraction: Outlier Banks
+# --------------------------------------------------------
 
-# --------------------------------------------------------#
-#-            Extractions for Outlier Banks              -#
-#---------------------------------------------------------#
+raster_folder <- pth("CONUS", "Service Area Mosaics 2021")
+output_folder <- pth("Extractions and Summaries", "Extract Banks")
 
-# Paths
-raster_folder <- "CONUS\\Service Area Mosaics 2021"  # Folder where service area TIFFs are stored
-output_folder <- "Extractions and Summaries/Extract Banks"
+outlier_banks <- readRDS(pth("Bank Footprints", "outlier_banks.rds"))
+sas <- readRDS(pth("Service Areas", "ServiceAreas_agg.rds"))
 
-# Load datasets
-outlier_banks <- readRDS("Bank Footprints/outlier_banks.rds")
-
-sas <- readRDS("Service Areas/ServiceAreas_agg.rds")
-
-# Function to sanitize names
-sanitize_name <- function(name) {
-  name <- gsub("[^A-Za-z0-9_-]", "_", name)  # Replace non-alphanumeric characters with "_"
-  name <- gsub("_+", "_", name)  # Replace multiple "_" with a single "_"
-  name <- gsub("^_|_$", "", name)  # Remove leading or trailing "_"
-  return(name)
-}
-
-# Apply name sanitization
 outlier_banks$Name <- sapply(outlier_banks$Name, sanitize_name)
-#saveRDS(banks, "Footprints/footprints_and_buffers.rds")
-
-# Filter banks to match those in service areas
 outlier_banks <- outlier_banks[outlier_banks$Name %in% sas$ID, ]
 
-# Create output directory if it doesn't exist
-if (!dir.exists(output_folder)) {
-  dir.create(output_folder, recursive = TRUE)
-}
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
-# Progress bar setup
 handlers(global = TRUE)
 progressr::with_progress({
   p <- progressr::progressor(along = outlier_banks$Name)
   
   results <- lapply(1:nrow(outlier_banks), function(i) {
-    test_bank <- outlier_banks[i, ]
-    test_bank_name <- test_bank$Name
-    raster_path <- file.path(raster_folder, paste0(test_bank_name, "_mosaic.tif"))
+    bank <- outlier_banks[i, ]
+    bank_name <- bank$Name
+    raster_path <- file.path(raster_folder, paste0(bank_name, "_mosaic.tif"))
     
-    p(sprintf("Processing: %s", test_bank_name))
+    p(sprintf("Processing: %s", bank_name))
     
-    # Check if raster exists
     if (!file.exists(raster_path)) {
-      warning(sprintf("Raster not found for %s, skipping...", test_bank_name))
+      warning(sprintf("Raster not found for %s, skipping...", bank_name))
       return(NULL)
     }
     
-    # Load raster
     sa_raster <- rast(raster_path)
+    extracted_data <- terra::extract(sa_raster, bank, cells = TRUE)
+    extracted_data$bank_name <- bank_name
     
-    # Extract values
-    extracted_data <- terra::extract(
-      x = sa_raster,
-      y = test_bank,  # Extract for the single bank polygon
-      cells = TRUE
-    )
-    
-    # Attach bank name
-    extracted_data$bank_name <- test_bank_name  
-    
-    # Save the extracted data
-    saveRDS(extracted_data, file.path(output_folder, paste0("bank_extract_", test_bank_name, ".rds")))
-    
+    saveRDS(extracted_data, file.path(output_folder, paste0("bank_extract_", bank_name, ".rds")))
     return(extracted_data)
   })
 })
 
-message("Bank extraction complete. All outlier bank files saved in: ", output_folder)
+message("Outlier bank extraction complete. All files saved in: ", output_folder)
+
+# --------------------------------------------------------
+#         Combine All Bank Extraction Files
+# --------------------------------------------------------
+
+bank_extract_folder <- pth("Extractions and Summaries", "Extract Banks")
+
+bank_files <- list.files(bank_extract_folder, pattern = "^bank_extract_.*\\.rds$", full.names = TRUE)
+
+bank_extract_combined <- bind_rows(lapply(bank_files, readRDS))
+
+saveRDS(bank_extract_combined, file = file.path(bank_extract_folder, "bank_extractions.rds"))
+
+message("All individual bank extractions combined into 'bank_extractions.rds'.")
+
+# --------------------------------------------------------
+#      Extraction: Wetland Loss - Service Areas (SA)
+# --------------------------------------------------------
+
+# Base folders for wetland loss raster mosaics
+raster_folder <- pth("Service Area Mosaics", "Loss Mosaics")
+output_folder_loss <- pth("Extractions and Summaries", "Extract Loss")
+
+dir.create(output_folder_loss, recursive = TRUE, showWarnings = FALSE)
+
+sas <- readRDS(pth("Service Areas", "ServiceAreas_agg.rds"))
+
+existing_files <- list.files(output_folder_loss, pattern = "^loss_extract_.*\\.rds$", full.names = FALSE)
+processed_sa_ids <- gsub("^loss_extract_(.*)\\.rds$", "\\1", existing_files)
+sas_to_process <- sas[!(sas$ID %in% processed_sa_ids), ]
+
+cat("Wetland Loss: Total service areas:", nrow(sas), "\n")
+cat("Already processed:", length(processed_sa_ids), "\n")
+cat("Remaining to process:", nrow(sas_to_process), "\n\n")
+
+handlers(global = TRUE)
+progressr::with_progress({
+  p <- progressor(along = sas_to_process$ID)
+  failed_sas <- c()
+  
+  lapply(1:nrow(sas_to_process), function(i) {
+    sa <- sas_to_process[i, ]
+    sa_id <- sa$ID
+    raster_path <- file.path(raster_folder, paste0(sa_id, "_loss1985mosaic.tif"))
+    output_path <- file.path(output_folder_loss, paste0("loss_extract_", sa_id, ".rds"))
+    
+    p(sprintf("Processing SA (loss): %s", sa_id))
+    
+    if (!file.exists(raster_path)) {
+      warning(sprintf("Raster not found for SA %s", sa_id))
+      failed_sas <<- c(failed_sas, sa_id)
+      return(NULL)
+    }
+    
+    sa_raster <- rast(raster_path)
+    extracted_data <- tryCatch({
+      terra::extract(sa_raster, sa, cells = TRUE)
+    }, error = function(e) {
+      warning(sprintf("Extraction failed for SA %s: %s", sa_id, e$message))
+      failed_sas <<- c(failed_sas, sa_id)
+      return(NULL)
+    })
+    
+    if (is.null(extracted_data)) return(NULL)
+    extracted_data$service_area_name <- sa_id
+    saveRDS(extracted_data, output_path)
+    return(extracted_data)
+  })
+  
+  if (length(failed_sas) > 0) {
+    writeLines(failed_sas, pth("Logs", "extraction_failures_sa_loss.txt"))
+    message("Some loss extractions failed. Check 'extraction_failures_sa_loss.txt'.")
+  }
+})
+
+message("Wetland loss extractioncomplete.")

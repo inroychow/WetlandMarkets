@@ -1,271 +1,131 @@
+#--------------------------------------------------------------
+#  Mosaic HUC12 rasters by Service Area – for 2021 and loss
+#--------------------------------------------------------------
+# 
+#         Set DATA_DIR env‑var (or edit datadir) and run.
+#         Call `mosaic_service_areas()` once for each raster set (loss or 2021)
+#         you need to mosaic 
+#--------------------------------------------------------------
+
+# Packages ----------------------------------------------------
 library(terra)
 library(sf)
 library(dplyr)
 library(future.apply)
-library(fst) 
+library(fst)
 
-setwd("C:/Users/indumati/Box/Paper2_final")
+# Base directory (override with env‑var) ----------------------
+datadir <- Sys.getenv("DATA_DIR", "C:/Users/indumati/Box/Paper2_final")
 
+# Helper to build absolute paths quickly
+pth <- function(...) file.path(datadir, ...)
 
-#-----------------------------------------------#
-#           To mosaic sequentially ...          #
-#-----------------------------------------------#
+#--------------------------------------------------------------
+#  Generic mosaicking function
+#--------------------------------------------------------------
 
-output_dir <- "Mosaics"
-raster_dir <- "Classified HUC12 Rasters"
-lookup_file <- "Service Areas/Service_Area_HUC12_Lookup.rds"
-
-sa_polygons <- readRDS("Service Areas/ServiceAreas_agg.rds")  
-lookup_table <- readRDS("Service Areas/Service_Area_HUC12_Lookup.rds")
-
-# Load necessary library
-library(terra)
-
-# Filter out already processed service areas
-already_processed <- list.files(output_dir, pattern = "_mosaic.tif$", full.names = FALSE)
-processed_ids <- gsub("_mosaic.tif", "", already_processed)
-lookup_table <- lookup_table[!(lookup_table$ID %in% processed_ids), ]
-
-# Print the number of rows in lookup_table
-print(paste("Total service areas to process:", nrow(lookup_table)))
-
-# Run sequentially with lapply
-results <- lapply(seq_len(nrow(lookup_table)), function(i) {
-  # Print progress
-  print(paste("Processing service area", i, "of", nrow(lookup_table)))
+mosaic_service_areas <- function(lookup_table_path,
+                                 sa_polygons_path,
+                                 raster_dir,
+                                 raster_pattern,          # regex with one capture group for HUC12 id
+                                 raster_filename_tmpl,    # sprintf‑style template with %s for HUC12 id
+                                 output_dir,
+                                 mosaic_suffix = "_mosaic.tif",
+                                 workers      = 5,
+                                 skip_existing = TRUE) {
+  # ---- Input validation ------------------------------------
+  stopifnot(dir.exists(dirname(lookup_table_path)),
+            dir.exists(dirname(sa_polygons_path)),
+            dir.exists(raster_dir))
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
   
-  # Extract service area ID and HUC12 codes
-  sa_id <- lookup_table$ID[i]
-  print(paste("Service Area ID:", sa_id))
+  # ---- Read static objects ---------------------------------
+  lookup_table <- readRDS(lookup_table_path)
+  sa_polygons  <- readRDS(sa_polygons_path)
   
-  huc12s <- lookup_table$huc12s[[i]]
-  print(paste("Number of HUC12s:", length(huc12s)))
+  # ---- Detect available rasters ----------------------------
+  raster_files <- list.files(raster_dir, pattern = "tif$", full.names = FALSE)
+  huc12_ids    <- sub(raster_pattern, "\\1", raster_files, perl = TRUE)
+  available    <- huc12_ids != raster_files      # keep only those that matched
+  huc12_ids    <- huc12_ids[available]
+  raster_files <- raster_files[available]
   
-  # Build full paths to the TIF files for these HUC12s
-  tif_paths <- file.path(raster_dir, paste0("huc12_", huc12s, "_raster.tif"))
-  tif_paths <- tif_paths[file.exists(tif_paths)]  # keep only existing files
-  print(paste("Valid raster files found:", length(tif_paths)))
-  
-  # Skip if no rasters are found
-  if (length(tif_paths) == 0) {
-    print(paste("Skipping service area", sa_id, "due to no valid rasters."))
-    return(NULL)
+  # ---- Filter lookup to service areas that actually have data
+  lookup_table <- lookup_table[sapply(lookup_table$huc12s,
+                                      function(x) any(x %in% huc12_ids)), ]
+  n_sa <- nrow(lookup_table)
+  message("Total service areas to process: ", n_sa)
+  if (n_sa == 0) {
+    warning("No service areas with matching rasters found – nothing to do.")
+    return(invisible(NULL))
   }
   
-  # Read rasters and create mosaic
-  print(paste("Reading", length(tif_paths), "raster files..."))
-  ras_list <- lapply(tif_paths, function(path) {
-    print(paste("Reading raster:", path))
-    rast(path)
-  })
-  
-  print("Mosaicking rasters...")
-  mosaic_ras <- do.call(terra::mosaic, ras_list)
-  print("Mosaic complete.")
-  
-  # Get the polygon for this service area
-  print("Extracting service area polygon...")
-  sa_poly <- sa_polygons[sa_polygons$ID == sa_id, ]
-  
-  # Ensure sa_poly is not empty
-  if (nrow(sa_poly) == 0) {
-    print(paste("Warning: No matching polygon found for Service Area", sa_id))
-    return(NULL)
+  # ---- Internal worker function ----------------------------
+  process_sa <- function(idx) {
+    sa_id   <- lookup_table$ID[idx]
+    outfile <- file.path(output_dir, paste0(sa_id, mosaic_suffix))
+    
+    if (skip_existing && file.exists(outfile)) {
+      message("[", sa_id, "] skipped (exists)")
+      return(sa_id)
+    }
+    
+    huc12s <- intersect(lookup_table$huc12s[[idx]], huc12_ids)
+    if (length(huc12s) == 0) {
+      warning("[", sa_id, "] skipped – no rasters available")
+      return(NA)
+    }
+    
+    # Build full paths for this SA
+    tif_paths <- file.path(raster_dir, sprintf(raster_filename_tmpl, huc12s))
+    tif_paths <- tif_paths[file.exists(tif_paths)]
+    
+    # Read & mosaic
+    ras_list  <- lapply(tif_paths, rast)
+    mosaic    <- do.call(terra::mosaic, ras_list)
+    
+    # Crop & mask to SA polygon
+    sa_poly   <- sa_polygons[sa_polygons$ID == sa_id, ]
+    if (nrow(sa_poly) == 0) {
+      warning("[", sa_id, "] no matching polygon – skipped")
+      return(NA)
+    }
+    mosaic_sa <- terra::mask(terra::crop(mosaic, sa_poly), sa_poly)
+    
+    # Save
+    terra::writeRaster(mosaic_sa, outfile, overwrite = TRUE)
+    message("[", sa_id, "] mosaic written → ", basename(outfile))
+    sa_id
   }
   
-  print("Cropping mosaic to service area polygon...")
-  mosaic_cropped <- crop(mosaic_ras, sa_poly)
-  
-  print("Masking mosaic to service area polygon...")
-  mosaic_masked <- mask(mosaic_cropped, sa_poly)
-  
-  # Define output path
-  out_path <- file.path(output_dir, paste0(sa_id, "_mosaic.tif"))
-  print(paste("Saving mosaic to:", out_path))
-  
-  # Write out the mosaic
-  writeRaster(mosaic_masked, out_path, overwrite = TRUE)
-  
-  print(paste("Mosaic successfully created for service area", sa_id))
-  
-  # Return a message to track progress
-  return(paste("Mosaic created for service area", sa_id))
-})
-
-print("Processing complete!")
-
-
-#-----------------------------------------------#
-#           To mosaic in parallel ...           #
-#-----------------------------------------------#
-
-
-# Paths
-output_dir        <- "Mosaics"
-raster_dir        <- "Classified HUC12 Rasters"
-
-# Load SA polygons 
-sa_polygons       <- readRDS("Service Areas/ServiceAreas_agg.rds")
-
-# Load the lookup table and subset it correctly to the SAs you want to run
-lookup_table <- readRDS("Service Areas/Service_Area_HUC12_Lookup.rds")
-lookup_table <- lookup_table[500:1863, ]  # Subset before use
-service_area_indices <- seq(500, 1863)  # Explicit indices
-
-num_service_areas <- nrow(lookup_table)
-cat("Total service areas:", num_service_areas, "\n\n")
-
-#Load ALL objects in function for parallel processing.
-process_service_area <- function(i, lookup_table) {
-  
-  # Load libraries inside the function for parallel execution
-  setwd("L:/Wetland Flood Mitigation")
-  library(terra)
-  sa_polygons       <- readRDS("Service Areas/ServiceAreas_agg.rds")
-  
-  output_dir  <- "Mosaics"
-  raster_dir  <- "Classified HUC12 Rasters"
-  lookup_table_path <- "Service Areas/Service_Area_HUC12_Lookup.rds"
-  
-  lookup_table <- readRDS(lookup_table_path)# Subset before use
-  
-  # Extract service area ID and HUC12 codes
-  sa_id  <- lookup_table$ID[i]
-  
-  # Define output path
-  out_path <- file.path(output_dir, paste0(sa_id, "_mosaic.tif"))
-  
-  # Check if the file already exists
-  if (file.exists(out_path)) {
-    message(sprintf("Skipping service area %s (already processed).", sa_id))
-    return(NULL)  # Skip processing if already done
-  }
-  
-  huc12s <- lookup_table$huc12s[[i]]
-  
-  message(sprintf("Processing service area %d of %d (ID: %s)", i, num_service_areas, sa_id))
-  
-  # Build full paths to the TIF files for these HUC12s
-  tif_paths <- file.path(raster_dir, paste0("huc12_", huc12s, "_raster.tif"))
-  tif_paths <- tif_paths[file.exists(tif_paths)]  # Keep only existing files
-  
-  if (length(tif_paths) == 0) {
-    warning(sprintf("Skipping service area %s (no valid rasters).", sa_id))
-    return(NULL)
-  }
-  
-  # Read rasters and mosaic
-  message(sprintf(" - Reading %d raster files...", length(tif_paths)))
-  ras_list <- lapply(tif_paths, rast)
-  
-  message(" - Mosaicking rasters...")
-  mosaic_ras <- do.call(terra::mosaic, ras_list)
-  
-  message(" - Extract the polygon for this service area...")
-  
-  # Extract the polygon for this service area
-  sa_poly <- sa_polygons[sa_polygons$ID == sa_id, ]
-  if (nrow(sa_poly) == 0) {
-    warning(sprintf("No matching polygon found for Service Area %s.", sa_id))
-    return(NULL)
-  }
-  
-  message(" - Cropping and masking mosaic to service area polygon...")
-  mosaic_cropped <- terra::crop(mosaic_ras, sa_poly)
-  mosaic_masked <- terra::mask(mosaic_cropped, sa_poly)
-  
-  message(sprintf(" - Saving mosaic to: %s", out_path))
-  
-  # Write mosaic to disk
-  terra::writeRaster(mosaic_masked, out_path, overwrite = FALSE)
-  
-  msg <- sprintf("Mosaic successfully created for service area %s", sa_id)
-  message(" - ", msg)
-  return(msg)
+  # ---- Parallel execution ----------------------------------
+  plan(multisession, workers = workers)
+  on.exit(plan(sequential), add = TRUE)
+  results <- future_lapply(seq_len(n_sa), process_sa, future.seed = TRUE)
+  invisible(results)
 }
 
-# Set maximum retries in case of failure
-max_retries <- 5  
-retry_count <- 0
+#--------------------------------------------------------------
+#  EXAMPLE CALLS                        -----------------------
+#--------------------------------------------------------------
 
-plan(multisession, workers = 10)
+# 1) Classified HUC12 rasters --------------------------------
+# mosaic_service_areas(
+#   lookup_table_path   = pth("Service Areas", "Service_Area_HUC12_Lookup.rds"),
+#   sa_polygons_path    = pth("Service Areas", "ServiceAreas_agg.rds"),
+#   raster_dir          = pth("Classified HUC12 Rasters"),
+#   raster_pattern      = "huc12_(.*)_raster.tif$",
+#   raster_filename_tmpl= "huc12_%s_raster.tif",
+#   output_dir          = pth("Mosaics"),
+#   workers             = 5)
 
-repeat {
-  retry_count <- retry_count + 1
-  message("Attempt: ", retry_count)
-  
-  results <- tryCatch({
-    future_lapply(
-      X = service_area_indices,  # Use correct indexing
-      FUN = function(i) process_service_area(i, lookup_table),  # Pass lookup_table
-      future.seed = TRUE
-    )
-  }, error = function(e) {
-    message("Error encountered: ", e$message)
-    return(NULL)  # Return NULL on error so we can check if it failed
-  })
-  
-  if (!is.null(results) || retry_count >= max_retries) {
-    break  # Exit loop if successful or max retries reached
-  }
-}
+# 2) Wetland loss (1985‑2021) --------------------------------
+# mosaic_service_areas(
+#   lookup_table_path   = pth("Service Areas", "Service_Area_HUC12_Lookup.rds"),
+#   sa_polygons_path    = pth("Service Areas", "ServiceAreas_agg.rds"),
+#   raster_dir          = pth("Wetland Loss", "Classified HUC12 Rasters - Loss"),
+#   raster_pattern      = "huc12_(.*)_raster1985loss.tif$",
+#   raster_filename_tmpl= "huc12_%s_raster1985loss.tif",
+#   output_dir          = pth("Service Area Mosaics", "Loss Mosaics"),
+#   workers             = 5)
 
-plan(sequential)
-
-
-#-----------------------------------------------#
-#           To use arguments.........           #
-#-----------------------------------------------#
-
-sa_polygons <- readRDS("Service Areas/ServiceAreas_agg.rds")
-lookup_table <- readRDS(lookup_table_path)
-
-results <- future_lapply(
-  X = service_area_indices,
-  FUN = function(i) process_service_area(i, lookup_table, sa_polygons),
-  future.seed = TRUE
-)
-
-process_service_area <- function(i, lookup_table, sa_polygons) {
-  library(terra)
-  
-  # Extract service area ID and HUC12 codes
-  sa_id  <- lookup_table$ID[i]
-  
-  # Define output path
-  out_path <- file.path(output_dir, paste0(sa_id, "_mosaic.tif"))
-  
-  # Check if the file already exists
-  if (file.exists(out_path)) {
-    return(NULL)  # Skip processing if already done
-  }
-  
-  huc12s <- lookup_table$huc12s[[i]]
-  
-  # Read rasters only if they exist
-  tif_paths <- file.path(raster_dir, paste0("huc12_", huc12s, "_raster.tif"))
-  tif_paths <- tif_paths[file.exists(tif_paths)]  
-  if (length(tif_paths) == 0) return(NULL)
-  
-  ras_list <- lapply(tif_paths, rast)
-  mosaic_ras <- do.call(terra::mosaic, ras_list)
-  
-  # Extract service area polygon **(already loaded in memory)**
-  sa_poly <- sa_polygons[sa_polygons$ID == sa_id, ]
-  if (nrow(sa_poly) == 0) return(NULL)
-  
-  # Crop and mask
-  mosaic_cropped <- terra::crop(mosaic_ras, sa_poly)
-  mosaic_masked <- terra::mask(mosaic_cropped, sa_poly)
-  
-  # Save
-  terra::writeRaster(mosaic_masked, out_path, overwrite = FALSE)
-  
-  return(sa_id)
-}
-
-results <- future_lapply(
-  X = service_area_indices,
-  FUN = function(i) process_service_area(i, lookup_table, sa_polygons),
-  future.seed = TRUE
-)

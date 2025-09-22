@@ -1,311 +1,187 @@
+# ---------------------------------------------------------------
+# ---------------------------------------------------------------
+#  
+#
+#           Classify wetland loss cells (1985–2021) by upstream
+#           flood protection value using a distance decay function
+#           and tract-level weights (housing units, value, pop).
+# ---------------------------------------------------------------
+
 library(tidyverse)
 library(terra)
 library(sf)
 library(progressr)
 library(future.apply)
 
-setwd("C:/Users/indumati/Box/Paper2_final")
+# --------------------- CONFIGURE ROOT PATH ---------------------
 
-# ===================================================================
-#               Lost Wetlands Flood Benefit Analysis
-# ===================================================================
+datadir <- Sys.getenv("DATA_DIR", "C:/Users/indumati/Box/Paper2_final")
+output_dir <- file.path(datadir, "Wetland Loss", "Classified HUC12 Rasters - Loss")
+error_log <- file.path(datadir, "Wetland Loss", "huc12_error_log.rds")
+no_centroids_log <- file.path(datadir, "Wetland Loss", "huc12_no_centroids_within_40km.rds")
 
-# Load the raster stack
-wetland_1985 <- rast("Wetland Loss/lcmap_1985.tif")
-wetland_2021 <- rast("Wetland Loss/lcmap_2021.tif")
+# Ensure required output/log folders exist
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Identify pixels that were wetland (6) in 2000 and developed (1) in 2021
-wetland_to_dev <- (wetland_1985 == 6) & (wetland_2021 == 1)
+# --------------------- UTILITY FUNCTIONS ------------------------
 
-# Create an output raster where lost-wetland-to-developed cells are set to 6 (or 1) and everything else is NA
-# (Choose whichever label you prefer; we use `6` here to indicate “lost wetland” cells.)
-lost_wetlands_dev_r <- ifel(wetland_to_dev, 6, NA)
-
-# Save the output raster
-writeRaster(
-  lost_wetlands_dev_r, 
-  "Wetland Loss/wetland_to_dev.tif", 
-  overwrite = TRUE
-)
-
-# Verify unique values
-plot(lost_wetlands_dev_r, col="blue")
-
-# Identify pixels that were wetland (6) in 1985 but are no longer wetland (not 6) in 2021
-wetland_lost <- (wetland_1985 == 6) & (wetland_2021 != 6)
-
-# Create an output raster where lost wetland cells are set to 6, everything else is NA
-lost_wetlands_r <- ifel(wetland_lost, 6, NA)
-
-# Plot
-plot(lost_wetlands_r, col = "blue")
-
-writeRaster(
-  lost_wetlands_dev_r, 
-  "Wetland Loss/wetland_loss_1985.tif", 
-  overwrite = TRUE
-)
-
-################
-handlers(global = TRUE)  # Enable progress handler globally
-handlers("txtprogressbar")  
-
-
-
-# Func to sanitize service area names for file paths
 sanitize_path <- function(path) {
   path <- gsub("[[:space:]]+", "_", path)
   path <- gsub("[^[:alnum:]_/-]", "", path)
   return(path)
 }
 
-# Distance decay function
 distance_decay <- function(distance_km) {
   distance_km_values <- c(0, 10, 20, 30, 40)
   decay_values <- c(0.25, 1, 0.75, 1, 0)
-  
-  interp_values <- approx(
-    x = distance_km_values,
-    y = decay_values,
-    xout = distance_km,
-    rule = 2,
-    yleft = 0,
-    yright = 0,
-    method = "linear"
-  )$y
-  return(interp_values)
+  approx(x = distance_km_values, y = decay_values, xout = distance_km,
+         rule = 2, yleft = 0, yright = 0, method = "linear")$y
 }
-process_huc12_single <- function(huc12_code, output_dir, 
-                                 error_log = "Wetland Loss/huc12_error_log.rds",
-                                 no_centroids_log = "Wetland Loss/huc12_no_centroids_within_40km.rds") {
+
+handlers(global = TRUE)
+handlers("txtprogressbar")
+
+# --------------------- Single HUC12 process function -------------------
+
+process_huc12_single <- function(huc12_code, output_dir,
+                                 error_log = error_log,
+                                 no_centroids_log = no_centroids_log) {
   tryCatch({
     cat(sprintf("\nProcessing unique HUC12: %s\n", huc12_code))
     
-    # Load spatial data
-    wetland_loss_raster <- rast("Wetland Loss/wetland_to_dev.tif")  
-    huc12s_fl <- st_read("Variables/huc12_boundaries.gpkg", quiet = TRUE)
-    huc12s_fl <- st_transform(huc12s_fl, st_crs(wetland_loss_raster))
-    tracts_centroids <- st_read("Variables/tracts_centroids.shp", quiet = TRUE)
-    tracts_centroids <- st_transform(tracts_centroids, st_crs(wetland_loss_raster))
-    tracts_data = readRDS("Variables/all_vars_tracts.rds")
-    tracts_data <- st_transform(tracts_data, st_crs(wetland_loss_raster))
-    huc12_to_downstream_tracts <- readRDS("Variables/htdt_conus.rds")
+    wetland_loss_raster <- rast(file.path(datadir, "Wetland Loss", "wetland_to_dev.tif"))
+    huc12s <- st_read(file.path(datadir, "Variables", "huc12_boundaries.gpkg"), quiet = TRUE) %>%
+      st_transform(crs(wetland_loss_raster))
+    tracts_centroids <- st_read(file.path(datadir, "Variables", "tracts_centroids.shp"), quiet = TRUE) %>%
+      st_transform(crs(wetland_loss_raster))
+    tracts_data <- readRDS(file.path(datadir, "Variables", "all_vars_tracts.rds")) %>%
+      st_transform(crs(wetland_loss_raster))
+    huc12_to_downstream_tracts <- readRDS(file.path(datadir, "Variables", "htdt_conus.rds"))
     
-    # Get downstream tracts for this HUC12
     downstream_tracts <- huc12_to_downstream_tracts %>%
       filter(huc12 == huc12_code) %>%
       pull(downstream_tracts) %>%
       unlist()
     
-    # Process HUC12 boundary
-    huc12_boundary <- huc12s_fl %>%
-      filter(huc12 == huc12_code) %>%
-      st_transform(crs(tracts_centroids)) %>%
-      st_transform(crs(wetland_loss_raster))
-    
-    # Crop & Mask wetland loss raster to this HUC12
-    lost_wetlands_huc12 <- crop(wetland_loss_raster, huc12_boundary) %>%
-      mask(huc12_boundary)
+    huc12_boundary <- huc12s %>% filter(huc12 == huc12_code)
+    lost_wetlands_huc12 <- crop(wetland_loss_raster, huc12_boundary) %>% mask(huc12_boundary)
     
     if (all(is.na(values(lost_wetlands_huc12)))) {
       cat(sprintf("No lost wetlands in HUC12 %s, skipping...\n", huc12_code))
-      return(NULL)  
-    }
-    
-    # Filter centroids and total values
-    downstream_centroids <- tracts_centroids %>%
-      filter(GEOID %in% downstream_tracts)
-    
-    tract_data <- tracts_data %>%
-      filter(GEOID %in% downstream_tracts) %>%
-      arrange(match(GEOID, downstream_tracts))
-    
-    # Calculate distances from tracts to HUC12 boundary
-    distances <- st_distance(downstream_centroids, huc12_boundary) / 1000  # Convert to km
-    distances <- as.numeric(distances)
-    
-    within_40km_indices <- which(distances <= 40)
-    if (length(within_40km_indices) == 0) {
-      cat(sprintf("No downstream tracts within 40 km for HUC12 %s\n", huc12_code))
-      
-      # Load or initialize no-centroids log
-      if (file.exists(no_centroids_log)) {
-        no_centroids_list <- readRDS(no_centroids_log)
-      } else {
-        no_centroids_list <- list()
-      }
-      
-      # Append new entry
-      no_centroids_list[[huc12_code]] <- list(huc12 = huc12_code, reason = "No centroids within 40km")
-      
-      # Save updated log
-      saveRDS(no_centroids_list, no_centroids_log)
-      
       return(NULL)
     }
     
-    # Process filtered centroids
-    downstream_centroids_filtered <- downstream_centroids[within_40km_indices, ]
-    tract_data_filtered <- tract_data[within_40km_indices, ]
-    tract_hu_filtered <- ifelse(tract_data_filtered$housing_units == 0, 0.000001, tract_data_filtered$housing_units)
-    tract_hv_filtered <- ifelse(tract_data_filtered$total_housing_value == 0, 0.000001, tract_data_filtered$total_housing_value)
-    tract_pop_filtered <- ifelse(tract_data_filtered$pop == 0, 0.000001, tract_data_filtered$pop)
+    downstream_centroids <- tracts_centroids %>% filter(GEOID %in% downstream_tracts)
+    tract_data <- tracts_data %>% filter(GEOID %in% downstream_tracts) %>% arrange(match(GEOID, downstream_tracts))
     
-    # Process distances and create decay stacks
-    decay_stack <- rast()
-    
-    for (i in seq_len(nrow(downstream_centroids_filtered))) {
-      distance_raster <- distance(lost_wetlands_huc12, downstream_centroids_filtered[i,]) / 1000
-      decay_raster <- app(distance_raster, fun = distance_decay)
-      decay_stack <- c(decay_stack, decay_raster)
-      rm(distance_raster, decay_raster)
-      gc()
+    distances <- as.numeric(st_distance(downstream_centroids, huc12_boundary) / 1000)
+    within_40km <- which(distances <= 40)
+    if (length(within_40km) == 0) {
+      cat(sprintf("No downstream tracts within 40 km for HUC12 %s\n", huc12_code))
+      log_list <- if (file.exists(no_centroids_log)) readRDS(no_centroids_log) else list()
+      log_list[[huc12_code]] <- list(huc12 = huc12_code, reason = "No centroids within 40km")
+      saveRDS(log_list, no_centroids_log)
+      return(NULL)
     }
     
-    # Calculate final scores
-    score_raster_hu <- terra::weighted.mean(decay_stack, w = tract_hu_filtered, na.rm = TRUE)
-    score_raster_hv <- terra::weighted.mean(decay_stack, w = tract_hv_filtered, na.rm = TRUE)
-    score_raster_pop <- terra::weighted.mean(decay_stack, w = tract_pop_filtered, na.rm = TRUE)
+    downstream_centroids <- downstream_centroids[within_40km, ]
+    tract_data <- tract_data[within_40km, ]
+    tract_hu <- ifelse(tract_data$housing_units == 0, 1e-6, tract_data$housing_units)
+    tract_hv <- ifelse(tract_data$total_housing_value == 0, 1e-6, tract_data$total_housing_value)
+    tract_pop <- ifelse(tract_data$pop == 0, 1e-6, tract_data$pop)
     
-    # Denormalize scores
-    unnormalized_score_hu <- score_raster_hu * sum(tract_hu_filtered)
-    unnormalized_score_hv <- score_raster_hv * sum(tract_hv_filtered)
-    unnormalized_score_pop <- score_raster_pop * sum(tract_pop_filtered)
+    decay_stack <- rast()
+    for (i in seq_len(nrow(downstream_centroids))) {
+      d_raster <- distance(lost_wetlands_huc12, downstream_centroids[i,]) / 1000
+      decay_raster <- app(d_raster, fun = distance_decay)
+      decay_stack <- c(decay_stack, decay_raster)
+      rm(d_raster, decay_raster); gc()
+    }
+    
+    score_hu <- weighted.mean(decay_stack, w = tract_hu, na.rm = TRUE)
+    score_hv <- weighted.mean(decay_stack, w = tract_hv, na.rm = TRUE)
+    score_pop <- weighted.mean(decay_stack, w = tract_pop, na.rm = TRUE)
     
     lost_wetlands_huc12[lost_wetlands_huc12 == 0] <- NA
+    cropped_hu <- mask(score_hu * sum(tract_hu), lost_wetlands_huc12)
+    cropped_hv <- mask(score_hv * sum(tract_hv), lost_wetlands_huc12)
+    cropped_pop <- mask(score_pop * sum(tract_pop), lost_wetlands_huc12)
     
-    # Crop to HUC12 extent
-    cropped_hu <- mask(unnormalized_score_hu, lost_wetlands_huc12)
-    cropped_hv <- mask(unnormalized_score_hv, lost_wetlands_huc12)
-    cropped_pop <- mask(unnormalized_score_pop, lost_wetlands_huc12)
-    
-    # Save multi-layer raster for this HUC12
-    output_file <- file.path(output_dir, sprintf("huc12_%s_raster1985loss.tif", huc12_code))
-    writeRaster(c(cropped_hu, cropped_hv, cropped_pop), output_file, overwrite = TRUE)
-    
-    cat(sprintf("\nSaved multi-layer raster for HUC12 %s to: %s\n", huc12_code, output_file))
-    
-    return(list(huc12_code = huc12_code, file = output_file))
-    
+    out_file <- file.path(output_dir, sprintf("huc12_%s_raster1985loss.tif", huc12_code))
+    writeRaster(c(cropped_hu, cropped_hv, cropped_pop), out_file, overwrite = TRUE)
+    cat(sprintf("\nSaved raster for HUC12 %s to: %s\n", huc12_code, out_file))
+    return(list(huc12_code = huc12_code, file = out_file))
   }, error = function(e) {
     cat(sprintf("Error processing HUC12 %s: %s\n", huc12_code, e$message))
-    
-    # Load or initialize error log
-    if (file.exists(error_log)) {
-      error_list <- readRDS(error_log)
-    } else {
-      error_list <- list()
-    }
-    
-    # Append new error
-    error_list[[huc12_code]] <- e$message
-    
-    # Save updated log
-    saveRDS(error_list, error_log)
-    
+    log_list <- if (file.exists(error_log)) readRDS(error_log) else list()
+    log_list[[huc12_code]] <- e$message
+    saveRDS(log_list, error_log)
     return(NULL)
   })
 }
 
+# --------------------- Batch process function --------------------------
 
-
-
-process_batches_startbatch <- function(huc12_file, output_dir, batch_size, start_batch, log_file = "batch_progress_log.txt") {
-  # Load the HUC12 to downstream tracts data
-  huc12_to_downstream_tracts <- readRDS(huc12_file)
+process_batches_startbatch <- function(huc12_file, output_dir, batch_size, start_batch,
+                                       log_file = file.path(datadir, "Wetland Loss", "batch_progress_log.txt")) {
+  htdt <- readRDS(huc12_file)
+  unique_huc12s <- unique(htdt$huc12)
+  total <- length(unique_huc12s)
+  num_batches <- ceiling(total / batch_size)
   
-  unique_huc12s <- unique(huc12_to_downstream_tracts$huc12)
-  total_huc12s <- length(unique_huc12s)
-  num_batches <- ceiling(total_huc12s / batch_size)
-  
-  cat(sprintf("Found %d unique HUC12s to process in %d batches (batch size: %d)\n", 
-              total_huc12s, num_batches, batch_size))
-  
-  # Open or create log file
-  log_conn <- file(log_file, open = "a")  # Append mode
-  
-  all_results <- list()  # To collect results across all batches
+  cat(sprintf("Found %d HUC12s in %d batches\n", total, num_batches))
+  log_conn <- file(log_file, open = "a")
+  all_results <- list()
   
   with_progress({
     for (batch in seq(start_batch, num_batches)) {
-      # Stop any old workers before starting a new batch
-      future:::ClusterRegistry("stop")  
-      plan(multisession, workers = 10)  # Restart workers for new batch
-      
-      # Determine indices for this batch
+      future:::ClusterRegistry("stop")
+      plan(multisession, workers = 10)
       start_idx <- (batch - 1) * batch_size + 1
-      end_idx <- min(batch * batch_size, total_huc12s)
+      end_idx <- min(batch * batch_size, total)
       batch_huc12s <- unique_huc12s[start_idx:end_idx]
       
-      # Log batch start
-      log_message <- sprintf("Starting batch %d of %d (%d HUC12s: %d to %d) at %s\n", 
-                             batch, num_batches, length(batch_huc12s), start_idx, end_idx, Sys.time())
-      cat(log_message)
-      writeLines(log_message, log_conn)
+      msg <- sprintf("Batch %d of %d (%d HUC12s) at %s\n", batch, num_batches,
+                     length(batch_huc12s), Sys.time())
+      cat(msg); writeLines(msg, log_conn)
       
-      # Progress bar for batch
       p <- progressor(along = batch_huc12s)
-      
-      # Parallel processing for the current batch
       batch_results <- future_lapply(batch_huc12s, function(huc12) {
-        p(sprintf("Processing HUC12: %s", huc12))  # Update progress bar
+        p(sprintf("Processing HUC12: %s", huc12))
         process_huc12_single(huc12, output_dir)
-      }, future.scheduling = 2)  # Improve load balancing
+      }, future.scheduling = 2)
       
-      # Filter valid results from the batch and append to all_results
       valid_results <- Filter(Negate(is.null), batch_results)
       all_results <- c(all_results, valid_results)
-      
-      # Log batch completion
-      log_message <- sprintf("Completed batch %d at %s\n", batch, Sys.time())
-      cat(log_message)
-      write(log_message, file = "batch_progress_log.txt", append = TRUE)
-      
-      # Free memory after each batch
       gc()
     }
   })
-  
-  close(log_conn)  # Close log file
+  close(log_conn)
   return(all_results)
 }
 
-# Define error log paths
-error_log <- "Wetland Loss/huc12_error_log.rds"
-no_centroids_log <- "Wetland Loss/huc12_no_centroids_within_40km.rds"
+# --------------------- Run main batch ---------------------------
 
-# Ensure .rds files exist before processing
-if (!file.exists(error_log)) {
-  saveRDS(list(), error_log)
-}
-
-if (!file.exists(no_centroids_log)) {
-  saveRDS(list(), no_centroids_log)
-}
-
-
-
-output_dir <- "Wetland Loss/Output loss"
-huc12_file <- "Variables/htdt_conus.rds"
-
-plan(multisession, workers=10)
-# Started 9:00am 2/20
+plan(multisession, workers = 10)
 results <- process_batches_startbatch(
-  huc12_file, 
-  output_dir, 
-  batch_size = 250, 
-  start_batch = 169
+  huc12_file = file.path(datadir, "Variables", "htdt_conus.rds"),
+  output_dir = output_dir,
+  batch_size = 250,
+  start_batch = 1
 )
 
-#On batch 169
+# ------------------ filter remaining and run again if needed ------------------
 
-# Remember to re-run batch 44...
+processed <- list.files(output_dir, pattern = "huc12_.*_raster1985loss\\.tif$", full.names = TRUE)
+processed_ids <- gsub(".*huc12_(.*)_raster1985loss\\.tif$", "\\1", processed)
+huc12_df <- readRDS(file.path(datadir, "Variables", "htdt_conus.rds"))
+remaining <- huc12_df %>% filter(!(huc12 %in% processed_ids))
+saveRDS(remaining, file.path(datadir, "Variables", "remaining.rds"))
 
-# 051202030806 Error reading from connection
-
-#Check for empty plots....
-plot(rast("Wetland Loss/Output loss/huc12_030802020500_raster1985loss.tif"))
-
-
-############## ALREADY PROCESSED
-
+plan(multisession, workers = 10)
+results <- process_batches_startbatch(
+  huc12_file = file.path(datadir, "Variables", "remaining.rds"),
+  output_dir = file.path(datadir, "Wetland Loss", "Output loss - 3.5"),
+  batch_size = 500,
+  start_batch = 1
+)

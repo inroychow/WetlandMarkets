@@ -14,7 +14,8 @@ suppressPackageStartupMessages({
   library(ggspatial)
 })
 
-setwd("C:/Users/indumati/Box/Paper2_final")
+pth <- function(...) file.path("C:/Users/indumati/Box/Paper2_final", ...)
+
 ######################################
 ######          FIGURE 1       ######
 ######                          ######
@@ -29,32 +30,25 @@ sanitize_name <- function(name) {
   return(name)
 }
 
+# Load relevant data
 
-# Load service area shapefiles
-serviceareas = vect("Service Areas/ServiceAreas_agg.rds")
+usa = st_read(pth("Geo Boundaries", "USA States", "tl_2020_us_state.shp"))
+  non_conus <- c("15", "02", "60", "66", "69", "72", "78")
+  conus <- usa[!usa$STATEFP %in% non_conus, ]
+  conus = st_transform(conus, st_crs(serviceareas))
+  conus = vect(conus)
+mb = readRDS(pth("Footprints", "mb_pointdata.rds"))
+  mb = st_transform(mb, st_crs(serviceareas))
+  mb$Name <- sapply(mb$Name, sanitize_name)
+  mb = mb %>% 
+    filter(Name %in% summary_loss$sa_id)
+serviceareas = readRDS(pth("Service Areas", "ServiceAreas_agg.rds"))
+  serviceareas = terra::intersect(serviceareas, conus)
+  serviceareas = st_as_sf(serviceareas)
+  serviceareas = serviceareas %>% 
+    filter(ID %in% mb$Name)
+summary_loss = readRDS(pth("Extractions and Summaries", "Summaries Loss", "loss_summary.rds"))
 
-usa = st_read("Geo Boundaries/USA States/tl_2020_us_state.shp")
-non_conus <- c("15", "02", "60", "66", "69", "72", "78")
-conus <- usa[!usa$STATEFP %in% non_conus, ]
-conus = st_transform(conus, st_crs(serviceareas))
-conus = vect(conus)
-
-serviceareas = terra::intersect(serviceareas, conus)
-serviceareas = st_as_sf(serviceareas)
-
-
-mb = readRDS("Footprints/mb_pointdata.rds")
-mb = st_transform(mb, st_crs(serviceareas))
-
-summary_loss = readRDS("C:/Users/indumati/Box/Paper2_final/Extractions and Summaries/Summaries Loss/loss_summary.rds")
-
-mb$Name <- sapply(mb$Name, sanitize_name)
-
-mb = mb %>% 
-  filter(Name %in% summary_loss$sa_id)
-
-serviceareas = serviceareas %>% 
-  filter(ID %in% mb$Name)
 
 
 # Rename columns for clarity (optional)
@@ -322,10 +316,9 @@ compare_remaining_vs_lost <- function(datadir, sample_size = 10000, seed = 123, 
   )
 }
 
-datadir <- "L:/Wetland Flood Mitigation/ECDF Functions"
-bank_summary = readRDS("CONUS/Extractions and Summaries/bank_summary.rds")
-sa_summary = readRDS("CONUS/Extractions and Summaries/sa_summary.rds")
-loss_summary = readRDS("CONUS/Extractions and Summaries/loss_summary.rds")
+bank_summary <- readRDS(pth("Extractions and Summaries", "bank_summary.rds"))
+sa_summary   <- readRDS(pth("Extractions and Summaries", "sa_summary.rds"))
+loss_summary <- readRDS(pth("Extractions and Summaries", "loss_summary.rds"))
 
 # FP_L Name update
 sa_summary$sa_id <- gsub("FP_L_", "FP_AndL_", sa_summary$sa_id)
@@ -346,14 +339,13 @@ loss_summary_subset = loss_summary %>%
   filter(sa_id %in% bank_summary$sa_id )
 # Merge
 combined_summary <- bind_rows(bank_summary, sa_summary_subset, loss_summary_subset)
-#saveRDS(combined_summary, "CONUS/Extractions and Summaries/full_summary.rds")
+saveRDS(combined_summary, pth("Extractions and Summaries", "full_summary.rds"))
 
-test = readRDS("CONUS/Extractions and Summaries/full_summary.rds")
+test = readRDS(pth("Extractions and Summaries", "full_summary.rds"))
 names = unique(test$sa_id)
-
 # names = names[1:6]
 res <- compare_remaining_vs_lost(datadir, bank_filter = names)
-res$combined_plot      # shows PDF + ECDF with bracket & sig-stars
+# res$combined_plot      # shows PDF + ECDF with bracket & sig-stars
 res$pdf_plot
 
 # -------------
@@ -361,6 +353,116 @@ res$pdf_plot
 ###########################################################
 ############# FIGURE 4 ECDFs Housing Units ################
 ###########################################################
+suppressPackageStartupMessages({
+  library(future)
+  library(future.apply)
+  library(tidyverse)
+  library(progressr)
+  library(data.table)
+})
+
+# ------------------------------------------------------------------
+#                      Paths & helpers
+# ------------------------------------------------------------------
+datadir <- "C:/Users/indumati/Box/Paper2_final"      # project root
+pth     <- function(...) file.path(datadir, ...)     # quick path builder
+
+ecdf_dir   <- pth("Extractions and Summaries", "ECDF Functions")                  # top of ECDF tree
+bank_dir   <- pth("Extractions and Summaries")  # where *_summary.rds live
+
+
+# ------------------------------------------------------------------
+#                       ECDF file lists
+# ------------------------------------------------------------------
+name_files <- list.files(pth(ecdf_dir, "SA ECDF Functions"), full.names = FALSE)
+bank_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", name_files)
+
+bankfiles <- list.files(pth(ecdf_dir, "Bank ECDF Functions"),
+                        pattern = "^bank_ecdf_fn_.*\\.rds$", full.names = TRUE)
+safiles   <- list.files(pth(ecdf_dir, "SA ECDF Functions"),
+                        pattern = "^ecdf_fn_.*\\.rds$", full.names = TRUE)
+lossfiles <- list.files(pth(ecdf_dir, "Loss ECDF Functions"),
+                        pattern = "^ecdf_fn_.*\\.rds$", full.names = TRUE)
+
+# ------------------------------------------------------------------
+#                       helper functions
+# ------------------------------------------------------------------
+
+get_ecdf_data <- function(ecdf_obj) {
+  dat <- environment(ecdf_obj)$x
+  if (length(dat) > 1e6) dat <- sample(dat, 1e6)
+  dat
+}
+
+signed_area_diff <- function(ecdf2, ecdf1, grid_size = 1000) {
+  x1 <- get_ecdf_data(ecdf1)
+  x2 <- get_ecdf_data(ecdf2)
+  grid <- seq(min(c(x1, x2)), max(c(x1, x2)), length.out = grid_size)
+  delta_x <- diff(range(grid)) / (grid_size - 1)
+  sum(ecdf1(grid) - ecdf2(grid)) * delta_x
+}
+
+quantile_diff <- function(x1, x2, probs = c(.25, .5, .75, .95, .99)) {
+  setNames(quantile(x1, probs) - quantile(x2, probs),
+           paste0("qdiff_", probs * 100))
+}
+
+make_row <- function(unit_name, label, ecdf1, ecdf2) {
+  if (!is.function(ecdf1) || !is.function(ecdf2))
+    return(tibble(unit = unit_name, comparison = label,
+                  mean_diff = NA, area_diff = NA,
+                  qdiff_25 = NA, qdiff_50 = NA, qdiff_75 = NA,
+                  qdiff_95 = NA, qdiff_99 = NA))
+  
+  x1 <- get_ecdf_data(ecdf1);  x2 <- get_ecdf_data(ecdf2)
+  qd <- quantile_diff(x1, x2)
+  tibble(unit = unit_name, comparison = label,
+         mean_diff = mean(x1) - mean(x2),
+         area_diff = signed_area_diff(ecdf1, ecdf2),
+         !!!qd)
+}
+
+process_unit <- function(unit_name) {
+  bankfile <- pth(ecdf_dir, "Bank ECDF Functions",        paste0("bank_ecdf_fn_", unit_name, ".rds"))
+  safile   <- pth(ecdf_dir, "SA ECDF Functions",          paste0("ecdf_fn_",    unit_name, ".rds"))
+  lossfile <- pth(ecdf_dir, "SA ECDF Functions - Loss",   paste0("ecdf_fn_",    unit_name, ".rds"))
+  
+  bank <- if (file.exists(bankfile)) readRDS(bankfile)$housing_units else NA
+  sa   <- if (file.exists(safile))   readRDS(safile)$housing_units   else NA
+  loss <- if (file.exists(lossfile)) readRDS(lossfile)$housing_units else NA
+  
+  bind_rows(
+    make_row(unit_name, "loss_vs_sa",   loss, sa),
+    make_row(unit_name, "loss_vs_bank", loss, bank),
+    make_row(unit_name, "sa_vs_bank",   sa,   bank)
+  )
+}
+
+# ------------------------------------------------------------------
+#                        run the comparisons
+# ------------------------------------------------------------------
+plan(multisession)
+handlers(global = TRUE)
+
+with_progress({
+  p <- progressor(along = bank_names)
+  results_df_long <- future_lapply(bank_names, function(n) { p(); process_unit(n) })
+})
+results_df_long <- bind_rows(results_df_long)
+plan(sequential)
+
+# ------------------------------------------------------------------
+#         summaries & additional ECDF normalisation (unchanged)
+# ------------------------------------------------------------------
+bank_summary  <- readRDS(pth(bank_dir, "bank_summary.rds"))
+sa_summary    <- readRDS(pth(bank_dir, "sa_summary.rds"))
+loss_summary  <- readRDS(pth(bank_dir, "loss_summary.rds"))
+
+sa_summary$sa_id   <- gsub("FP_L_", "FP_AndL_", sa_summary$sa_id)
+loss_summary$sa_id <- gsub("FP_L_", "FP_AndL_", loss_summary$sa_id)
+
+
+
 
 library(future)
 library(future.apply)
@@ -382,7 +484,7 @@ names = sub("^ecdf_fn_(.*)\\.rds$", "\\1", names)
 #2. lost wetlands vs banks
 #3. service areas vs banks
 
-#following written with assistance from ChatGPT
+
 # Functions
 get_ecdf_data <- function(ecdf_obj) {
   dat=environment(ecdf_obj)$x
@@ -437,33 +539,9 @@ make_row <- function(unit_name, label, ecdf1, ecdf2) {
   )
 }
 
-bankfiles=list.files(paste0(datadir,"\\Bank ECDF Functions\\"),full.names=TRUE)
-safiles=list.files(paste0(datadir,"\\SA ECDF Functions\\"),full.names=TRUE)
-lossfiles=list.files(paste0(datadir,"\\SA ECDF Functions - Loss\\"),full.names=TRUE)
-
-process_unit <- function(unit_name, datadir, bankfiles=bankfiles, safiles=safiles, lossfiles=lossfiles) {
-  bankfile <- paste0(datadir, "\\Bank ECDF Functions\\bank_ecdf_fn_", unit_name, ".rds")
-  safile   <- paste0(datadir, "\\SA ECDF Functions\\ecdf_fn_", unit_name, ".rds")
-  lossfile <- paste0(datadir, "\\SA ECDF Functions - Loss\\ecdf_fn_", unit_name, ".rds")
-  
-  bank <- if (bankfile %in% bankfiles) readRDS(bankfile)$housing_units else NA
-  sa   <- if (safile %in% safiles) readRDS(safile)$housing_units else NA
-  loss <- if (lossfile %in% lossfiles) readRDS(lossfile)$housing_units else NA
-  
-  do.call(rbind, list(
-    make_row(unit_name, "loss_vs_sa",   loss, sa),
-    make_row(unit_name, "loss_vs_bank", loss, bank),
-    make_row(unit_name, "sa_vs_bank",   sa, bank)
-  ))
-}
-plan(multisession)
-
-results_df_long <- future_lapply(
-  names,
-  FUN = function(n) process_unit(n, datadir, bankfiles, safiles, lossfiles)
-)
-results_df_long <- do.call(rbind, results_df_long)
-plan(sequential)
+bankfiles=list.files(paste0(datadir,"Extractions and Summaries/Bank ECDF Functions"),full.names=TRUE)
+safiles=list.files(paste0(datadir,"Extractions and Summaries/SA ECDF Functions"),full.names=TRUE)
+lossfiles=list.files(paste0(datadir,"Extractions and Summaries/Loss ECDF Functions"),full.names=TRUE)
 
 
 x_grid <- 10^seq(-2, 3.5, length.out = 750)
@@ -471,8 +549,8 @@ x_grid <- 10^seq(-2, 3.5, length.out = 750)
 #look at ratios - i.e. what is ratio of flood benefit at different parts of the wetland loss distribution?
 process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfiles=lossfiles, x_grid=x_grid) {
   # File paths
-  bankfile <- paste0(datadir, "\\Bank ECDF Functions\\bank_ecdf_fn_", unit_name, ".rds")
-  lossfile <- paste0(datadir, "\\SA ECDF Functions - Loss\\ecdf_fn_", unit_name, ".rds")
+  bankfile <- paste0(datadir, "Extractions and Summaries/Bank ECDF Functions/bank_ecdf_fn_", unit_name, ".rds")
+  lossfile <- paste0(datadir, "Extractions and Summaries/Loss ECDF Functions/ecdf_fn_", unit_name, ".rds")
   
   # Load data if files exist
   bank_data <- if (bankfile %in% bankfiles) readRDS(bankfile) else NA
@@ -532,8 +610,8 @@ process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfi
 }
 
 
-plan(multisession)  # or sequential/multicore/etc.
-handlers("txtprogressbar")  # or "progress" for shiny/fancier
+plan(multisession)  
+handlers("txtprogressbar")  
 
 with_progress({
   p <- progressor(along = names)
@@ -620,7 +698,6 @@ crossings <- ecdf_summary %>%
 
 # 3. Add horizontal lines & labels to your existing plot ‘a’
 #    We anchor the left side at x = 0.1 for readability in log-scale plots:
-xmin_val <- min(results_long_normalized$x[results_long_normalized$x > 0], na.rm = TRUE)
 
 # Then update your plot:
 a +
@@ -759,9 +836,9 @@ fig3_ecdf
 
 
 # ECDFs --------------------------
-ecdf_loss = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Wetland Loss\\Extractions\\Extract Service Area Loss\\SA Summaries Loss\\SA ECDF Functions - Loss\\ecdf_fn_Loxahatchee_MB.rds")
-ecdf_sa = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Service Areas 2021\\SA ECDF Functions\\ecdf_fn_Loxahatchee_MB.rds")
-ecdf_bank = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Banks 2021\\Bank ECDF Functions\\bank_ecdf_fn_Loxahatchee_MB.rds")
+ecdf_loss = readRDS(paste0(datadir,"Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Loxahatchee_MB.rds"))
+ecdf_sa = readRDS(paste0(datadir, "Extractions and Summaries/SA ECDF Functions\\ecdf_fn_Loxahatchee_MB.rds"))
+ecdf_bank = readRDS(paste0(datadir, "Extractions and Summaries/Bank ECDF Functions\\bank_ecdf_fn_Loxahatchee_MB.rds"))
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -839,9 +916,9 @@ ecdfplot_hu
 
 # ECDF CYPRESS --------------------------------
 
-ecdf_loss = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Wetland Loss\\Extractions\\Extract Service Area Loss\\SA Summaries Loss\\SA ECDF Functions - Loss\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_sa = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Service Areas 2021\\SA ECDF Functions\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_bank = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Banks 2021\\Bank ECDF Functions\\bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_loss = readRDS("Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_sa = readRDS("Extractions and Summaries/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_bank = readRDS("Extractions and Summaries/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -943,7 +1020,7 @@ banks = readRDS("Footprints/footprints_and_buffers.rds")
 lox_banks = banks[banks$Name =="Loxahatchee_MB"]
 lox_sa = sas[sas$ID == "Loxahatchee_MB",]
 
-lox_mosaic_loss = rast("CONUS/Wetland Loss/Service Area Mosaics Loss - 3.5/Loxahatchee_MB_lossmosaic.tif")
+lox_mosaic_loss = rast(paste0(datadir, "Service Area Mosaics/Loss Mosaics/Loxahatchee_MB_lossmosaic.tif"))
 lox_mosaic_4326 = terra::project(lox_mosaic_loss, crs("EPSG:4326"))
 states <- ne_states(country = "United States of America", returnclass = "sf")
 states_albers <- st_transform(states, crs(lox_sa))
@@ -1033,13 +1110,13 @@ bank_fill <- function(raster_path, polygon_sf, variable = "housing_units") {
 }
 
 lox_bank_filled <- bank_fill(
-  raster_path = "CONUS/Service Area Mosaics 2021/Loxahatchee_MB_mosaic.tif",
+  raster_path = paste0(datadir, "Service Area Mosaics/Loxahatchee_MB_mosaic.tif"),
   polygon_sf = lox_bank_4326,
   variable = "housing_units"  # can also be "housing_value" or "population"
 )
 
 lox_loss_filled = bank_fill(
-  raster_path = "CONUS/Wetland Loss/Service Area Mosaics Loss - 3.5/Loxahatchee_MB_lossmosaic.tif",
+  raster_path = paste0(datadir, "Service Area Mosaics/Loss Mosaics/Loxahatchee_MB_lossmosaic.tif"),
   polygon_sf = lox_sa_4326,
   variable = "housing_units"  # can also be "housing_value" or "population"
 )
@@ -1184,7 +1261,7 @@ lossplot_nbm
 #  -------------------------------- Plot remaining SAs mosaic -----------------------------------------------------
 
 # Load the raster
-lox_mosaic_sa <- rast("CONUS/Service Area Mosaics 2021/Loxahatchee_MB_mosaic.tif")
+lox_mosaic_sa <- rast(paste0(datadir, "Service Area Mosaics/Loxahatchee_MB_mosaic.tif"))
 
 # Extract values as a data frame (in native CRS, meters)
 mosaic_df_sa <- as.data.frame(lox_mosaic_sa, xy = TRUE, na.rm = TRUE)
@@ -1330,11 +1407,11 @@ saplot_nbm
 
 # Map CYPRESS
 
-test = readRDS("CONUS/Wetland Loss/Extractions/Extract Service Area Loss/SA Summaries Loss/sa_summary_loss.rds")
-test_bank = readRDS("Extractions/Extract Banks 2021/bank_summary_2021.rds")
+test = readRDS(paste0(datadir,"Extractions and Summaries/sa_summary_loss.rds"))
+test_bank = readRDS(paste0(datadir,"Extractions and Summaries/bank_summary.rds"))
 
-sas= readRDS("Service Areas/ServiceAreas_agg.rds")
-banks = readRDS("Footprints/footprints_and_buffers.rds")
+sas= readRDS(paste0(datadir,"Service Areas/ServiceAreas_agg.rds"))
+banks = readRDS(paste0(datadir, "Footprints/footprints_and_buffers.rds"))
 
 
 #Find which states intersect this SA ----------------------------------------
@@ -1345,7 +1422,7 @@ cypress_banks = banks[banks$Name %in% c("Big_Cypress_MB_Phase_I-V", "Big_Cypress
 cypress_banks = terra::union(cypress_banks)
 cypress_sa = sas[sas$ID == "Big_Cypress_MB_Phase_I-V",]
 
-cypress_mosaic_loss = rast("CONUS/Wetland Loss/Service Area Mosaics Loss - 3.5/Big_Cypress_MB_Phase_I-V_lossmosaic.tif")
+cypress_mosaic_loss = rast(paste0(datadir, "Service Area Mosaics/Loss Mosaics/Big_Cypress_MB_Phase_I-V_lossmosaic.tif"))
 
 states <- ne_states(country = "United States of America", returnclass = "sf")
 states_albers <- st_transform(states, crs(cypress_sa))
@@ -1419,20 +1496,20 @@ bank_fill <- function(raster_path, polygon_sf, variable = "housing_units") {
 }
 
 cypress_bank_filled <- bank_fill(
-  raster_path = "CONUS/Service Area Mosaics 2021/Big_Cypress_MB_Phase_I-V_mosaic.tif",
+  raster_path = paste0("Service Area Mosaics/Big_Cypress_MB_Phase_I-V_mosaic.tif"),
   polygon_sf = cypress_bank_4326,
   variable = "housing_units"  # can also be "housing_value" or "population"
 )
 
 cypress_loss_filled <- bank_fill(
-  raster_path = "CONUS/Wetland Loss/Service Area Mosaics Loss - 3.5/Big_Cypress_MB_Phase_I-V_lossmosaic.tif",
+  raster_path = paste0("Service Area Mosaics/Loss Mosaics/Big_Cypress_MB_Phase_I-V_lossmosaic.tif"),
   polygon_sf = cypress_sa_4326,
   variable = "housing_units"  # can also be "housing_value" or "population"
 )
 cypress_loss_filled
 
 # Load the raster
-cypress_mosaic_sa <- rast("CONUS/Service Area Mosaics 2021/Big_Cypress_MB_Phase_I-V_mosaic.tif")
+cypress_mosaic_sa <- rast(paste0("Service Area Mosaics/Big_Cypress_MB_Phase_I-V_mosaic.tif"))
 
 # Extract values as a data frame (in native CRS, meters)
 mosaic_df_sa <- as.data.frame(cypress_mosaic_sa, xy = TRUE, na.rm = TRUE)
@@ -1692,13 +1769,13 @@ ylim <- c(bb["ymin"], bb["ymax"])
 
 
 ####################################################
-###### FIGURE 5: DISTANCE DECAY FUNCTION PLOT ######
+###### FIGURE 5                               ######
 ####################################################
 
 # Update file paths
-ecdf_loss = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Wetland Loss\\Extractions\\Extract Service Area Loss\\SA Summaries Loss\\SA ECDF Functions - Loss\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_sa = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Service Areas 2021\\SA ECDF Functions\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_bank = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Banks 2021\\Bank ECDF Functions\\bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_loss = readRDS(paste0(datadir, "Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_sa = readRDS(paste0(datadir, "Extractions and Summaries/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_bank = readRDS(paste0(datadir, "Extractions and Summaries/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -1777,7 +1854,7 @@ fig4_hu = ggplot(df_hu, aes(x = value, y = ecdf, color = source)) +
 fig4_hu
 
 ####################################################
-###### FIGURE 5: DISTANCE DECAY FUNCTION PLOT ######
+###### FIGURE 6: DISTANCE DECAY FUNCTION PLOT ######
 ####################################################
 
 distance_decay <- function(distance_km) {

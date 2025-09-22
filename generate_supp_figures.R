@@ -1,4 +1,5 @@
 library(ggplot2)
+datadir <- Sys.getenv("DATA_DIR", "C:/Users/indumati/Box/Paper2_final")
 
 ##########################
 ######## FIGURE S1 #######
@@ -56,18 +57,15 @@ a_hv_pop
 ######## FIGURE S2 #######
 ##########################
 
-# Violins
-
-# FIND THE CODE FOR THIS
 
 ##########################
-######## FIGURE S3 #######
+######## FIGURE S2 #######
 ##########################
 
 library(tidyverse)
 sa_dir <- "Extractions and Summaries/Extract Service Areas"
 bank_dir <- "Extractions and Summaries/Extract Banks"
-loss_dir <- "Wetland Loss/Extractions/Extract Service Area Loss"
+loss_dir <- "Extractions and Summaries/Extract Loss"
 # ----------------------------
 # Define top 10 bank name groups
 # ----------------------------
@@ -274,9 +272,9 @@ ggplot(plot_df, aes(x = log_hu, colour = group, fill = group)) +
 ######## FIGURE S3 #######
 ##########################
 
-ecdf_loss = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Wetland Loss\\Extractions\\Extract Service Area Loss\\SA Summaries Loss\\SA ECDF Functions - Loss\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_sa = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Service Areas 2021\\SA ECDF Functions\\ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_bank = readRDS("L:\\Wetland Flood Mitigation\\CONUS\\Extractions\\Extract Banks 2021\\Bank ECDF Functions\\bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_loss = readRDS(paste0(datadir, "Extractions and Summaries/ECDF Functions/Loss ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_sa = readRDS(paste0(datadir, "Extractions and Summaries/ECDF Functions/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_bank = readRDS("Extractions and Summaries/ECDF Functions/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -396,9 +394,9 @@ ecdfplot_pop
 ######## TABLE 1  ########
 ##########################
 
-summary_loss = readRDS("CONUS/Summaries/loss_summary.rds")
-summary_bank = readRDS("CONUS/Summaries/bank_summary.rds")
-sa_summary = readRDS("CONUS/Summaries/sa_summary.rds")
+summary_loss = readRDS(paste0("Extractions and Summaries/loss_summary.rds"))
+summary_bank = readRDS(paste0("Extractions and Summaries/bank_summary.rds"))
+sa_summary = readRDS(paste0("Extractions and Summaries/sa_summary.rds"))
 
 summary_bank <- summary_bank %>%
   mutate(bank_name= recode(bank_name, 
@@ -504,16 +502,16 @@ run_modified_t_tests_for_bank <- function(bank_names,
   
   # ----- build paths ------------------------------------------------
   bank_paths <- map(bank_names,
-                    ~ file.path("CONUS", "Extractions with Geom",
+                    ~ file.path("Extractions and Summaries", "Extractions with Geom",
                                 "Bank Extract with Geom",
                                 glue("bank_extract_{.x}withgeom.rds")))
   
-  sa_path   <- file.path("CONUS", "Extractions with Geom",
+  sa_path   <- file.path("Extractions and Summaries", "Extractions with Geom",
                          "SA Extract with Geom",
                          glue("sa_extract_{canon}.rds"))
   
   # loss lives in the same “sa_extract” folder according to your note
-  loss_path <- file.path("CONUS", "Extractions with Geom",
+  loss_path <- file.path("Extractions and Summaries", "Extractions with Geom",
                          "Loss Extract with Geom",
                          glue("sa_extract_{canon}.rds"))
   
@@ -629,15 +627,15 @@ run_modified_t_tests_for_bank <- function(bank_names,
   canon <- bank_names[1]
   
   bank_paths <- map(bank_names,
-                    ~ file.path("CONUS", "Extractions with Geom",
+                    ~ file.path("Extractions and Summaries", "Extractions with Geom",
                                 "Bank Extract with Geom",
                                 glue("bank_extract_{.x}withgeom.rds")))
   
-  sa_path   <- file.path("CONUS", "Extractions with Geom",
+  sa_path   <- file.path("Extractions and Summaries", "Extractions with Geom",
                          "SA Extract with Geom",
                          glue("sa_extract_{canon}.rds"))
   
-  loss_path <- file.path("CONUS", "Extractions with Geom",
+  loss_path <- file.path("Extractions and Summaries", "Extractions with Geom",
                          "Loss Extract with Geom",
                          glue("sa_extract_{canon}.rds"))
   
