@@ -1,4 +1,7 @@
 #model flood risk time trends as a function of wetland flood value loss / difference with bank
+library(tidyverse)
+library(lfe)
+library(modelsummary)
 
 #first assemble bank statistics dataset
 loss=readRDS("data/Summary data/loss_summary.rds")
@@ -16,8 +19,8 @@ coefs=merge(coefs,wetlanddata,by.x="banks_upstream",by.y="sa_id",all=FALSE)
 coefs$weight=1/sqrt(coefs$std.error)
 
 #greater flood damages over time, controling for NFIP coverage, is associated with estimated upstream lost wetland value
-mod_zero=lm(estimate~I(log(sum_housing_value_loss)),data=coefs%>%filter(stage=="zero"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
-mod_pos=lm(estimate~I(log(sum_housing_value_loss)),data=coefs%>%filter(stage=="positive"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0)])
+mod_zero_simple=lm(estimate~I(log(sum_housing_value_loss)),data=coefs[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0),],weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
+mod_pos_simple=lm(estimate~I(log(sum_housing_value_loss)),data=coefs[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0&is.finite(coefs$weight)),],weights = coefs$weight[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0&is.finite(coefs$weight))])
 
 #now look at any additional effect of differential flood valuation in lost wetlands vs bank
 #the larger this variable, the larger trends in flood damages we would expect
@@ -28,8 +31,13 @@ coefs$diff_val=(coefs$diff_val-mean(coefs$diff_val,na.rm=T))/sd(coefs$diff_val,n
 mod_zero=lm(estimate~I(log(sum_housing_value_loss))*diff_val,data=coefs%>%filter(stage=="zero"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
 mod_pos=lm(estimate~I(log(sum_housing_value_loss))*diff_val,data=coefs%>%filter(stage=="positive"&sum_housing_value_loss>0),weights = coefs$weight[which(coefs$stage=="positive"&coefs$sum_housing_value_loss>0)])
 
-summary(mod_zero)
-summary(mod_pos)
-#could add a control for total remaining flood value in service area?
-#look at combined effect from hurdle model
-         
+#output summary table
+
+mods=list("Simple Model, Binary"=mod_zero_simple,"Simple Model, Flood Damage"=mod_pos_simple, "Full Model, Binary"=mod_zero,"Full Model, Flood Damage"=mod_pos)
+
+msummary(mods,
+         output="summarytable.docx",
+         vcov="robust",
+         stars=TRUE,
+         coef_omit=1,
+         coef_rename=c("Log Lost Flood Protection/n(Housing Value)","Bank Median-Loss Median","Log Lost Flood Protection*/n(Bank Median-Loss Median)"))
