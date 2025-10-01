@@ -94,10 +94,11 @@ ggplot() +
 
 # Inset added in ArcGIS 
 
-######################################
-######          FIGURE 2        ######
-######                          ######
-######################################
+##############################################################################
+######                                                                ########
+######          FIGURE 2 (old version, no pooled service areas)       ########
+######                                                                ########
+##############################################################################
 
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -107,7 +108,7 @@ suppressPackageStartupMessages({
   library(vctrs)
 })
 
-compare_remaining_vs_lost <- function(datadir, sample_size = 10000, seed = 123, bank_filter = NULL) {
+compare_remaining_vs_lost <- function(datadir, sample_size = 10000, seed = 123, filter = NULL) {
   suppressPackageStartupMessages({
     library(tidyverse)
     library(scales)
@@ -115,16 +116,16 @@ compare_remaining_vs_lost <- function(datadir, sample_size = 10000, seed = 123, 
   })
   
   message("Scanning directory for bank ECDF files …")
-  bank_files <- list.files(file.path(datadir, "SA ECDF Functions"), full.names = FALSE)
-  bank_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", bank_files)
+  sa_files <- list.files(file.path(datadir, "SA ECDF Functions"), full.names = FALSE)
+  sa_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", sa_files)
   
   
-  # ✅ Filter bank_names if filter is provided
-  if (!is.null(bank_filter)) {
-    bank_names <- bank_names[bank_names %in% bank_filter]
+  # ✅ Filter sa_names if filter is provided
+  if (!is.null(filter)) {
+    sa_names <- sa_names[sa_names %in% filter]
   }
   
-  total_banks <- length(bank_names)
+  total_banks <- length(sa_names)
   if (total_banks == 0) stop("No ECDF files found for specified banks in directory: ", datadir)
   
   results_list <- vector("list", total_banks * 2)
@@ -132,8 +133,8 @@ compare_remaining_vs_lost <- function(datadir, sample_size = 10000, seed = 123, 
   successful_banks <- 0
   set.seed(seed)
   
-  for (i in seq_along(bank_names)) {
-    bank <- bank_names[i]
+  for (i in seq_along(sa_names)) {
+    bank <- sa_names[i]
     message(sprintf("[%d/%d] Processing bank: %s", i, total_banks, bank))
     
     sa_file   <- file.path(datadir, "SA ECDF Functions",        sprintf("ecdf_fn_%s.rds", bank))
@@ -348,11 +349,367 @@ res <- compare_remaining_vs_lost(datadir, bank_filter = names)
 # res$combined_plot      # shows PDF + ECDF with bracket & sig-stars
 res$pdf_plot
 
+
+
+
+##############################################################################
+######                                                                ########
+######          FIGURE 2 (updated, pooled service areas)              ########
+######                                                                ########
+##############################################################################
+
+
+compare_remaining_vs_lost_pooled <- function(datadir, bank_pool_map, bank_summary_path, sample_size = 10000, seed = 123, filter = NULL) {
+  suppressPackageStartupMessages({
+    library(tidyverse)
+    library(scales)
+    library(vctrs)
+  })
+  
+  message("Setting up pooled analysis with bank_pool_map...")
+  
+  # Load bank summary to get valid bank names
+  bank_summary <- readRDS(bank_summary_path)
+  valid_sa_names <- unique(bank_summary$bank_name)  
+  message(sprintf("Loaded %d valid bank names from bank_summary", length(valid_sa_names)))
+  
+  # Create mapping of pools to representative bank names (for loss files)
+  pool_representatives <- bank_pool_map %>%
+    group_by(pool_id) %>%
+    slice(1) %>%  # Take first bank as representative
+    ungroup()
+  
+  # Get list of banks that are in pools
+  pooled_banks <- unique(bank_pool_map$bank_name)
+  
+  # Get all available individual SA files
+  sa_files <- list.files(file.path(datadir, "SA ECDF Functions"), full.names = FALSE)
+  sa_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", sa_files)
+  message(sprintf("Found %d total SA files", length(sa_names)))
+  
+  # Filter to valid SA names from bank_summary 
+  sa_names <- intersect(sa_names, valid_sa_names)
+  message(sprintf("Filtered to valid SA names: %d", length(sa_names)))
+  
+  # Remove pooled banks from individual processing
+  individual_banks <- setdiff(sa_names, pooled_banks)
+  
+  if (!is.null(filter)) {
+    individual_banks <- individual_banks[individual_banks %in% filter]
+    # Also filter pools if any of their banks are in the filter
+    relevant_pools <- bank_pool_map %>%
+      filter(bank_name %in% filter) %>%
+      pull(pool_id) %>%
+      unique()
+    pool_representatives <- pool_representatives %>%
+      filter(pool_id %in% relevant_pools)
+  }
+  
+  # Debug: Show what we're working with
+  message(sprintf("Total SA files found: %d", length(sa_names)))
+  message(sprintf("Banks in pools (to be removed): %d", length(pooled_banks)))
+  message(sprintf("Individual banks after removing pooled: %d", length(individual_banks)))
+  message(sprintf("Number of pools: %d", nrow(pool_representatives)))
+  
+  # Calculate total markets: individual banks + pools
+  n_individual <- length(individual_banks)
+  n_pools <- nrow(pool_representatives)
+  total_markets <- n_individual + n_pools
+  
+  message(sprintf("Expected calculation: %d individual + %d pools = %d total markets", 
+                  n_individual, n_pools, total_markets))
+  
+  # Check if we have the expected 936 markets
+  if (total_markets != 936) {
+    warning(sprintf("Expected 936 markets but found %d. Please verify:", total_markets))
+    warning(sprintf("  - Original SA files: %d", length(sa_names)))
+    warning(sprintf("  - Pooled banks to remove: %d", length(pooled_banks)))
+    warning(sprintf("  - Should be: %d - %d + %d = 936", length(sa_names), length(pooled_banks), n_pools))
+  }
+  
+  results_list <- vector("list", total_markets * 2)
+  j <- 1
+  successful_markets <- 0
+  set.seed(seed)
+  
+  # Process individual banks (non-pooled)
+  message("Processing individual (non-pooled) banks...")
+  for (i in seq_along(individual_banks)) {
+    bank <- individual_banks[i]
+    market_num <- i
+    message(sprintf("[%d/%d] Processing individual bank: %s", market_num, total_markets, bank))
+    
+    sa_file   <- file.path(datadir, "SA ECDF Functions",        sprintf("ecdf_fn_%s.rds", bank))
+    loss_file <- file.path(datadir, "SA ECDF Functions - Loss", sprintf("ecdf_fn_%s.rds", bank))
+    
+    if (!file.exists(sa_file) || !file.exists(loss_file)) {
+      message("  - Skipping – missing ECDF file(s)")
+      next
+    }
+    
+    sa_ecdf   <- readRDS(sa_file)$housing_units
+    loss_ecdf <- readRDS(loss_file)$housing_units
+    if (is.null(sa_ecdf) || is.null(loss_ecdf)) {
+      message("  - Skipping – housing_units ECDF missing")
+      next
+    }
+    
+    sa_data   <- knots(sa_ecdf)
+    loss_data <- knots(loss_ecdf)
+    if (length(sa_data) == 0 || length(loss_data) == 0) {
+      message("  - Skipping – ECDF contains no data")
+      next
+    }
+    
+    sa_n_obs   <- environment(sa_ecdf)$n   %||% length(sa_data)
+    loss_n_obs <- environment(loss_ecdf)$n %||% length(loss_data)
+    
+    bank_remaining_mean <- mean(sa_data)
+    
+    if (length(sa_data) > sample_size) {
+      sa_data <- sample(sa_data, sample_size)
+      message(sprintf("  - Downsampled remaining: %s -> %s",
+                      comma(sa_n_obs), comma(length(sa_data))))
+    }
+    if (length(loss_data) > sample_size) {
+      loss_data <- sample(loss_data, sample_size)
+      message(sprintf("  - Downsampled lost: %s -> %s",
+                      comma(loss_n_obs), comma(length(loss_data))))
+    }
+    
+    row_weight <- loss_n_obs / length(loss_data)
+    
+    remaining <- tibble(
+      market_id = bank, 
+      status = "remaining", 
+      value = sa_data,
+      normalized_value = sa_data / bank_remaining_mean,
+      weight = row_weight
+    ) %>% filter(is.finite(normalized_value) & normalized_value > 0)
+    
+    lost <- tibble(
+      market_id = bank, 
+      status = "lost", 
+      value = loss_data,
+      normalized_value = loss_data / bank_remaining_mean,
+      weight = row_weight
+    ) %>% filter(is.finite(normalized_value) & normalized_value > 0)
+    
+    results_list[[j]] <- remaining; j <- j + 1
+    results_list[[j]] <- lost;      j <- j + 1
+    successful_markets <- successful_markets + 1
+  }
+  
+  # Process pooled banks
+  message("Processing pooled banks...")
+  for (i in seq_len(nrow(pool_representatives))) {
+    pool_id <- pool_representatives$pool_id[i]
+    representative_bank <- pool_representatives$bank_name[i]
+    market_num <- n_individual + i
+    
+    message(sprintf("[%d/%d] Processing pool: %s (using %s for loss)", 
+                    market_num, total_markets, pool_id, representative_bank))
+    
+    # Use pooled SA ECDF
+    pooled_sa_file <- file.path(datadir, "Pooled HUC8 ECDFs", sprintf("ecdf_pool_vs_sa_%s.rds", pool_id))
+    
+    # Use representative bank for loss ECDF
+    loss_file <- file.path(datadir, "SA ECDF Functions - Loss", sprintf("ecdf_fn_%s.rds", representative_bank))
+    
+    if (!file.exists(pooled_sa_file) || !file.exists(loss_file)) {
+      message("  - Skipping – missing ECDF file(s)")
+      next
+    }
+    
+    # For pooled files, we want $sa_rem_ecdf$housing_units
+    pooled_data <- readRDS(pooled_sa_file)
+    sa_ecdf <- pooled_data$sa_rem_ecdf$housing_units
+    
+    loss_ecdf <- readRDS(loss_file)$housing_units
+    
+    if (is.null(sa_ecdf) || is.null(loss_ecdf)) {
+      message("  - Skipping – housing_units ECDF missing")
+      next
+    }
+    
+    sa_data   <- knots(sa_ecdf)
+    loss_data <- knots(loss_ecdf)
+    if (length(sa_data) == 0 || length(loss_data) == 0) {
+      message("  - Skipping – ECDF contains no data")
+      next
+    }
+    
+    sa_n_obs   <- environment(sa_ecdf)$n   %||% length(sa_data)
+    loss_n_obs <- environment(loss_ecdf)$n %||% length(loss_data)
+    
+    pool_remaining_mean <- mean(sa_data)
+    
+    if (length(sa_data) > sample_size) {
+      sa_data <- sample(sa_data, sample_size)
+      message(sprintf("  - Downsampled remaining: %s -> %s",
+                      comma(sa_n_obs), comma(length(sa_data))))
+    }
+    if (length(loss_data) > sample_size) {
+      loss_data <- sample(loss_data, sample_size)
+      message(sprintf("  - Downsampled lost: %s -> %s",
+                      comma(loss_n_obs), comma(length(loss_data))))
+    }
+    
+    row_weight <- loss_n_obs / length(loss_data)
+    
+    remaining <- tibble(
+      market_id = pool_id, 
+      status = "remaining", 
+      value = sa_data,
+      normalized_value = sa_data / pool_remaining_mean,
+      weight = row_weight
+    ) %>% filter(is.finite(normalized_value) & normalized_value > 0)
+    
+    lost <- tibble(
+      market_id = pool_id, 
+      status = "lost", 
+      value = loss_data,
+      normalized_value = loss_data / pool_remaining_mean,
+      weight = row_weight
+    ) %>% filter(is.finite(normalized_value) & normalized_value > 0)
+    
+    results_list[[j]] <- remaining; j <- j + 1
+    results_list[[j]] <- lost;      j <- j + 1
+    successful_markets <- successful_markets + 1
+  }
+  
+  if (successful_markets == 0) stop("No markets with both remaining and lost ECDFs were processed.")
+  message("Successfully processed ", successful_markets, " market(s) out of ", total_markets, " expected")
+  
+  results <- bind_rows(results_list)
+  rm(results_list); gc()
+  
+  message("Computing ECDF data …")
+  results_ecdf_full <- results %>%
+    group_by(market_id, status) %>%
+    arrange(normalized_value) %>%
+    mutate(ecdf_y = row_number() / n()) %>%
+    ungroup()
+  
+  # Statistics for the PDF panel
+  loss_mean <- weighted.mean(results$normalized_value[results$status == "lost"],
+                             w = results$weight[results$status == "lost"], na.rm = TRUE)
+  
+  # t-test (unweighted)
+  p_val <- t.test(normalized_value ~ status, data = results)$p.value
+  
+  # Create the plot using the separate function
+  pdf_plot <- create_wetland_pdf_plot(results_ecdf_full, loss_mean, p_val)
+  
+  message("All done! Returning plots and data.")
+  list(
+    pdf_plot      = pdf_plot,
+    data          = results_ecdf_full,
+    p_value       = p_val,
+    loss_mean     = loss_mean,
+    n_markets     = successful_markets,
+    n_individual  = n_individual,
+    n_pools       = n_pools
+  )
+}
+
+
+datadir <- "L:/Wetland Flood Mitigation/ECDF Functions"
+bank_summary_path <- "CONUS/Extractions and Summaries/bank_summary.rds"
+res <- compare_remaining_vs_lost_pooled(datadir, bank_pool_map, bank_summary_path, sample_size = 10000, seed = 123)
+res$pdf_plot
+
+# Check that we have 936 markets:
+message(sprintf("Total markets processed: %d (Individual: %d, Pools: %d)",
+                res$n_markets, res$n_individual, res$n_pools))
+
+
+# CREATE PDF PLOT HERE:
+
+create_wetland_pdf_plot <- function(results_data, loss_mean, p_val,
+                                    bracket_pad   = 0.10,   # ← raise bracket
+                                    star_pad_frac = 0.05) { # ← raise stars
+  sig_stars <- case_when(
+    p_val < 0.001 ~ "***",
+    p_val < 0.01  ~ "**",
+    p_val < 0.05  ~ "*",
+    TRUE          ~ "ns"
+  )
+  
+  dens_rem  <- density(results_data$normalized_value[results_data$status == "remaining"])
+  dens_lost <- density(results_data$normalized_value[results_data$status == "lost"])
+  y_max     <- max(dens_rem$y, dens_lost$y, na.rm = TRUE)
+  
+  y_bracket <- y_max * (1 + bracket_pad)           # was 1.05
+  y_tick    <- y_max * (1 + bracket_pad - 0.03)    # keep ticks a bit lower
+  
+  x_left  <- min(1, loss_mean)
+  x_right <- max(1, loss_mean)
+  
+  ggplot(results_data,
+         aes(x = normalized_value,
+             colour = status,
+             weight = weight)) +
+    stat_density(geom = "line", position = "identity", linewidth = 1.2) +
+    geom_vline(xintercept = 1,         linetype = "dashed",
+               colour = "blue",  linewidth = .8) +
+    geom_vline(xintercept = loss_mean, linetype = "dashed",
+               colour = "red",   linewidth = .8) +
+    annotate("segment", x = x_left,  xend = x_right,
+             y = y_bracket, yend = y_bracket) +
+    annotate("segment", x = x_left,  xend = x_left,
+             y = y_bracket, yend = y_tick) +
+    annotate("segment", x = x_right, xend = x_right,
+             y = y_bracket, yend = y_tick) +
+    annotate("text",
+             x = (x_left + x_right) / 2 - 0.2,
+             y = y_bracket + star_pad_frac * y_max,
+             label = sig_stars, vjust = 0) +
+    scale_x_log10(
+      limits = c(0.01, 100),
+      breaks = sort(unique(c(0.1, 1, 10, 100, signif(loss_mean, 2)))),
+      labels = function(x) format(x, digits = 2, trim = TRUE),
+      expand  = c(0, 0)
+    ) +
+    expand_limits(y = y_bracket + (star_pad_frac + 0.01) * y_max) +
+    labs(x = "Value (Relative to Remaining Service Area Mean)",
+         y = "Density") +
+    scale_color_manual(
+      values = c(lost = "red", remaining = "blue"),
+      labels = c(lost = "Wetland Loss (1985–2021)",
+                 remaining = "Remaining Wetland (2021)"),
+      name   = ""
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_text(size = 14),
+      legend.text   = element_text(size = 12),
+      axis.title    = element_text(size = 16),
+      axis.text     = element_text(size = 14),
+      plot.title    = element_text(size = 16),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+}
+
+higher_plot <- create_wetland_pdf_plot(res$data,
+                                       loss_mean = res$loss_mean,
+                                       p_val     = res$p_value,
+                                       bracket_pad   = 0.25,   
+                                       star_pad_frac = 0.12)   
+print(higher_plot)
+
+ggsave(file.path("CONUS/Graphics/pdfplot_pooled.png"),  plot_result$plot, width=12, height=8, dpi=300)
+
 # -------------
 
-###########################################################
-############# FIGURE 4 ECDFs Housing Units ################
-###########################################################
+##############################################################################
+######                                                                ########
+######          FIGURE 3 (old version, no pooled service areas)       ########
+######                                                                ########
+##############################################################################
+
 suppressPackageStartupMessages({
   library(future)
   library(future.apply)
@@ -375,7 +732,7 @@ bank_dir   <- pth("Extractions and Summaries")  # where *_summary.rds live
 #                       ECDF file lists
 # ------------------------------------------------------------------
 name_files <- list.files(pth(ecdf_dir, "SA ECDF Functions"), full.names = FALSE)
-bank_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", name_files)
+sa_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", name_files)
 
 bankfiles <- list.files(pth(ecdf_dir, "Bank ECDF Functions"),
                         pattern = "^bank_ecdf_fn_.*\\.rds$", full.names = TRUE)
@@ -669,7 +1026,7 @@ ref_values <- c(1, 1.5, 2)
 
 # 2. Interpolate the mean CDF at each reference for each comparison
 crossings <- ecdf_summary %>%
-  # In case you have zero or negative x, remove them to avoid log-scale or approx issues
+  # In case zero or negative x, remove them to avoid log-scale or approx issues
   filter(x > 0) %>%
   group_by(comparison) %>%
   summarize(
@@ -692,7 +1049,6 @@ crossings <- ecdf_summary %>%
     ),
     percent_below = round(100 * cdf_value, 1),
     percent_above = round(100 * (1 - cdf_value), 1),
-    # Example label: "30% below\n70% above"
     label = paste0(percent_below, "% below\n", percent_above, "% above")
   )
 
@@ -828,6 +1184,356 @@ fig3_ecdf <- ggplot(
 
 fig3_ecdf
 
+
+########################################################
+########                                          ######
+########  Figure 3 (updated version, pooled SAs)  ######
+########                                          ######
+########################################################
+
+
+# ──────────────────────────────────────────────────────────────
+# 3.  Helper functions  (unchanged from your script)
+# ──────────────────────────────────────────────────────────────
+get_ecdf_data <- function(ecdf_obj) {
+  dat <- environment(ecdf_obj)$x
+  if (length(dat) > 1e6) dat <- sample(dat, 1e6)
+  dat
+}
+
+
+as_num_vec <- function(v) {
+  v <- suppressWarnings(as.numeric(v))
+  v[is.finite(v)]
+}
+
+signed_area_diff <- function(ecdf2, ecdf1, grid_size = 1000) {
+  x1 <- get_ecdf_data(ecdf1)
+  x2 <- get_ecdf_data(ecdf2)
+  grid <- seq(min(c(x1, x2)), max(c(x1, x2)), length.out = grid_size)
+  delta_x <- diff(range(grid)) / (grid_size - 1)
+  sum(ecdf1(grid) - ecdf2(grid)) * delta_x
+}
+
+quantile_diff <- function(x1, x2,
+                          probs = c(.25, .5, .75, .95, .99)) {
+  setNames(quantile(x1, probs) - quantile(x2, probs),
+           paste0("qdiff_", probs * 100))
+}
+
+make_row <- function(unit_name, label, ecdf1, ecdf2) {
+  if (!is.function(ecdf1) || !is.function(ecdf2))
+    return(tibble(unit = unit_name, comparison = label,
+                  mean_diff = NA, area_diff = NA,
+                  qdiff_25 = NA, qdiff_50 = NA, qdiff_75 = NA,
+                  qdiff_95 = NA, qdiff_99 = NA))
+  
+  x1 <- get_ecdf_data(ecdf1);  x2 <- get_ecdf_data(ecdf2)
+  qd <- quantile_diff(x1, x2)
+  tibble(unit = unit_name, comparison = label,
+         mean_diff = mean(x1) - mean(x2),
+         area_diff = signed_area_diff(ecdf1, ecdf2),
+         !!!qd)
+}
+
+# ──────────────────────────────────────────────────────────────
+# 4.  ECDF comparison worker
+# ──────────────────────────────────────────────────────────────
+
+# Pool representative workflow with exact same process_unit logic
+library(dplyr)
+library(data.table)
+library(future)
+library(future.apply)
+library(progressr)
+
+# Setup directories and file lists
+base_dir <- "C:\\Users\indumati\\Box\\ECDF Functions"
+bankfiles <- list.files(file.path(base_dir, "Bank ECDF Functions"), full.names = TRUE)
+lossfiles <- list.files(file.path(base_dir, "SA ECDF Functions - Loss"), full.names = TRUE)
+
+# Get available unit names from bank files
+bank_names <- list.files(file.path(base_dir, "Bank ECDF Functions"))
+bank_names <- sub("^bank_ecdf_fn_(.*)\\.rds$", "\\1", bank_names)
+
+loss_names <- list.files(file.path(base_dir, "SA ECDF Functions - Loss"))
+loss_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", loss_names)
+
+# Units that have both bank AND loss files 
+complete_units <- intersect(bank_names, loss_names)
+cat("Units with both bank and loss files:", length(complete_units), "\n")
+
+# Create pool lookup
+pool_lookup <- bank_pool_map %>%
+  distinct(pool_id, sa_id = bank_name)
+
+# Get ONE representative per pool from units that have complete files
+pools_with_complete <- pool_lookup %>%
+  filter(sa_id %in% complete_units) %>%
+  group_by(pool_id) %>%
+  slice(1) %>%  # Take first complete unit per pool
+  ungroup()
+
+# Get representative units for multi-bank pools
+sa_multi <- pools_with_complete$sa_id
+
+# Solo units are those NOT in any pool AND have complete files
+sa_solo <- setdiff(complete_units, pool_lookup$sa_id)
+
+# Final list of units to process
+names <- c(sa_multi, sa_solo)
+
+cat("Pool representatives:", length(sa_multi), "\n")
+cat("Solo units:", length(sa_solo), "\n")
+cat("Total units to process:", length(names), "\n")
+
+# Verify coverage
+pools_covered <- pools_with_complete$pool_id
+total_pools <- unique(pool_lookup$pool_id)
+cat("Pools covered:", length(pools_covered), "out of", length(total_pools), "\n")
+
+# Setup x_grid (same as your original)
+x_grid <- 10^seq(-2, 3.5, length.out = 750)
+
+process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfiles=lossfiles, x_grid=x_grid) {
+  # Always load loss data
+  lossfile <- paste0(datadir, "ECDF Functions/SA ECDF Functions - Loss/ecdf_fn_", unit_name, ".rds")
+  loss_data <- if (lossfile %in% lossfiles) readRDS(lossfile) else NA
+  
+  # Determine if unit is in a pool
+  pool_id <- pool_lookup$pool_id[pool_lookup$sa_id == unit_name]
+  
+  if (length(pool_id) > 0) {
+    # POOLED UNIT: Load from pooled directory
+    poolfile <- paste0(datadir, "ECDF Functions/Pooled HUC8 ECDFs/ecdf_pool_vs_sa_", pool_id[1], ".rds")
+    if (file.exists(poolfile)) {
+      pool_data <- readRDS(poolfile)
+      bank_data <- pool_data$bank_ecdf
+    } else {
+      return(NULL)
+    }
+  } else {
+    # SOLO UNIT: Load from individual bank directory
+    bankfile <- paste0(datadir, "ECDF Functions/Bank ECDF Functions/bank_ecdf_fn_", unit_name, ".rds")
+    bank_data <- if (bankfile %in% bankfiles) readRDS(bankfile) else NA
+  }
+  
+  # Validate required objects
+  if (!is.list(bank_data) || !is.list(loss_data)) return(NULL)
+  if (!is.function(bank_data$housing_units) || !is.function(loss_data$housing_units)) return(NULL)
+  if (!is.function(bank_data$housing_value) || !is.function(loss_data$housing_value)) return(NULL)
+  
+  # Extract raw values
+  bank_vals  <- environment(bank_data$housing_units)$x
+  bank_hval  <- environment(bank_data$housing_value)$x
+  loss_vals  <- environment(loss_data$housing_units)$x
+  loss_hval  <- environment(loss_data$housing_value)$x
+  
+  # Compute means
+  bank_mean_vals <- mean(bank_vals, na.rm = TRUE)
+  bank_mean_hval <- mean(bank_hval, na.rm = TRUE)
+  
+  # Normalize accordingly
+  loss_vals_norm <- loss_vals / bank_mean_vals
+  loss_hval_norm <- loss_hval / bank_mean_hval
+  
+  n_obs <- length(loss_vals_norm)
+  
+  # Optional downsampling
+  if (n_obs > 1e5) {
+    sampled_indices <- sample(seq_len(n_obs), 1e5)
+    loss_vals_norm <- loss_vals_norm[sampled_indices]
+    loss_hval_norm <- loss_hval_norm[sampled_indices]
+  }
+  
+  # Evaluate ECDFs
+  ecdf_vals  <- ecdf(loss_vals_norm)
+  ecdf_hvals <- ecdf(loss_hval_norm)
+  
+  # Output both sets as tibbles
+  result_units <- tibble(
+    unit = unit_name,
+    comparison = "normalized_loss_units",
+    x = x_grid,
+    y = ecdf_vals(x_grid),
+    n_obs = n_obs
+  )
+  
+  result_values <- tibble(
+    unit = unit_name,
+    comparison = "normalized_loss_values",
+    x = x_grid,
+    y = ecdf_hvals(x_grid),
+    n_obs = n_obs
+  )
+  
+  # Return combined result
+  bind_rows(result_units, result_values)
+}
+
+# Your exact parallel processing workflow
+plan(multisession, workers= 10)
+handlers("txtprogressbar")
+
+with_progress({
+  p <- progressor(along = names)
+  
+  results_long <- future_lapply(names, function(n) {
+    p(message = n)
+    process_unit(n, datadir, bankfiles, lossfiles, x_grid)
+  })
+})
+
+results_long <- Filter(Negate(is.null), results_long)
+results_long_normalized <- bind_rows(results_long)
+
+
+fwrite(results_long_normalized,file=paste0(basedir,"\\poolednormalized_ecdfs_loss.csv"))
+
+results_hu <- results_long_normalized %>%
+  filter(comparison == "normalized_loss_units")
+
+# Recalculate ecdf_summary for housing units only
+ecdf_summary <- results_hu %>%
+  group_by(x, comparison) %>%
+  summarize(mean_y = weighted.mean(y, w = n_obs), .groups = "drop")
+crossings <- ecdf_summary %>%
+  # In case you have zero or negative x, remove them to avoid log-scale or approx issues
+  filter(x > 0) %>%
+  group_by(comparison) %>%
+  summarize(
+    # approx(..., rule=2) will clamp outside x-range rather than return NA
+    below_1   = approx(x, mean_y, xout = 1,   rule = 2)$y,
+    below_1_5 = approx(x, mean_y, xout = 1.5, rule = 2)$y,
+    below_2   = approx(x, mean_y, xout = 2,   rule = 2)$y,
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = starts_with("below_"),
+    names_to = "key",
+    values_to = "cdf_value"
+  ) %>%
+  mutate(
+    ref_x = case_when(
+      key == "below_1"   ~ 1,
+      key == "below_1_5" ~ 1.5,
+      key == "below_2"   ~ 2
+    ),
+    percent_below = round(100 * cdf_value, 1),
+    percent_above = round(100 * (1 - cdf_value), 1),
+    # Example label: "30% below\n70% above"
+    label = paste0(percent_below, "% below\n", percent_above, "% above")
+  )
+# Assign colors to the reference lines
+ref_line_colors <- c("gray10", "gray25", "gray40")
+names(ref_line_colors) <- c("below_1", "below_1_5", "below_2")
+
+
+# Merge colors into crossings
+crossings <- crossings %>%
+  mutate(line_color = ref_line_colors[key])
+crossings_hu <- crossings %>% filter(comparison == "normalized_loss_units")
+xmin_val <- min(results_long_normalized$x[results_long_normalized$x > 0], na.rm = TRUE)
+f_mean <- approxfun(ecdf_summary_hu$x, ecdf_summary_hu$mean_y, rule = 2, ties = mean)
+
+# Reference x’s (clamped to the curve’s domain for safety on log scale)
+ref_tbl <- tibble(
+  key   = c("below_1", "below_1_5", "below_2"),
+  ref_x = c(1, 1.5, 2)
+) %>%
+  mutate(
+    ref_x = pmax(min(ecdf_summary_hu$x, na.rm = TRUE),
+                 pmin(ref_x, max(ecdf_summary_hu$x, na.rm = TRUE)))
+  )
+crossings_hu <- ref_tbl %>%
+  mutate(
+    cdf_value     = f_mean(ref_x),
+    percent_below = round(100 * cdf_value, 1),
+    percent_above = round(100 * (1 - cdf_value), 1),
+    label         = paste0(percent_below, "% below\n", percent_above, "% above"),
+    line_color    = c("below_1" = "gray10", "below_1_5" = "gray25", "below_2" = "gray40")[key]
+  )
+xmin_val <- min(ecdf_summary_hu$x, na.rm = TRUE)
+fig3_ecdf <- ggplot(
+  results_hu,
+  aes(x = x, y = y, group = unit, lwd = n_obs)
+) +
+  geom_line(alpha = 0.2, aes(color = "Big Cypress Mitigation Bank")) +  # label the raw lines+
+  geom_line(data = ecdf_summary_hu, aes(x = x, y = mean_y, color = "Mean ECDF"), inherit.aes = FALSE, linewidth = 1) +
+  
+  # Vertical dashed lines from xmin to crossing point only
+  geom_segment(
+    data = crossings_hu,
+    aes(x = ref_x, xend = ref_x, y = 0, yend = cdf_value, color = key),
+    linetype = "dashed",
+    linewidth = 0.5,
+    inherit.aes = FALSE
+  ) +
+  
+  # Horizontal dashed lines from xmin to vertical line, color-coded
+  geom_segment(
+    data = crossings_hu,
+    aes(x = xmin_val, xend = ref_x, y = cdf_value, yend = cdf_value, color = key),
+    linetype = "dashed",
+    linewidth = 0.5,
+    inherit.aes = FALSE
+  ) +
+  # annotate("text",
+  #          x = big_cypress_label_point$x + 50,
+  #          y = big_cypress_label_point$y + 0.01,
+  #          label = "Big Cypress\nMitigation Bank",
+  #          color = "black",
+  #          fontface = "bold",
+  #          size = 4,
+  #          hjust = 0.3) +
+  # annotate("segment",
+  #          x = big_cypress_label_point$x + 26,  # moved from +20 to +23
+  #          xend = big_cypress_label_point$x + 6,  # was just big_cypress_label_point$x
+  #          y = big_cypress_label_point$y + 0.01,
+  #          yend = big_cypress_label_point$y,
+  #          color = "black",
+  #          arrow = arrow(length = unit(0.25, "cm")))+
+  
+  # Color mapping for reference lines
+  scale_color_manual(
+    values = c(
+      "below_1" = "gray10",
+      "below_1_5" = "gray25",
+      "below_2" = "gray40",
+      "Mean ECDF" = "black",
+      "Big Cypress Mitigation Bank" = "#F8766D"
+    ),
+    guide = "none"  # remove legend
+  )+
+  
+  labs(
+    y = "Cumulative Density",
+    x = "Value Relative to Bank Mean"
+  ) +
+  scale_x_log10(
+    breaks = c(0.1, 1, 1.5, 2, 10, 100, 1000),
+    labels = c("0.1", "1", "1.5", "2", "10", "100", "1000"),
+    expand = c(0, 0)
+  )+
+  scale_y_continuous(expand = c(0, 0))+
+  theme_bw(base_size = 14) +  # make all text larger
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    strip.text = element_blank(),  # remove facet title
+    strip.background = element_blank(),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_linewidth_continuous(guide = "none")
+
+fig3_ecdf
+
+ggsave(file.path("Figures/ecdfplot_pooled.png"),  fig3_ecdf, width=12, height=8, dpi=300)
+
 ################# 
 ### Figure 4 ####
 #################
@@ -836,9 +1542,9 @@ fig3_ecdf
 
 
 # ECDFs --------------------------
-ecdf_loss = readRDS(paste0(datadir,"Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Loxahatchee_MB.rds"))
-ecdf_sa = readRDS(paste0(datadir, "Extractions and Summaries/SA ECDF Functions\\ecdf_fn_Loxahatchee_MB.rds"))
-ecdf_bank = readRDS(paste0(datadir, "Extractions and Summaries/Bank ECDF Functions\\bank_ecdf_fn_Loxahatchee_MB.rds"))
+ecdf_loss = readRDS(paste0(datadir,"ECDF Functions/SA ECDF Functions - Loss/ecdf_fn_Loxahatchee_MB.rds"))
+ecdf_sa = readRDS(paste0(datadir, "ECDF Functions/SA ECDF Functions\\ecdf_fn_Loxahatchee_MB.rds"))
+ecdf_bank = readRDS(paste0(datadir, "ECDF Functions/Bank ECDF Functions\\bank_ecdf_fn_Loxahatchee_MB.rds"))
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -916,9 +1622,9 @@ ecdfplot_hu
 
 # ECDF CYPRESS --------------------------------
 
-ecdf_loss = readRDS("Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_sa = readRDS("Extractions and Summaries/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
-ecdf_bank = readRDS("Extractions and Summaries/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_loss = readRDS("ECDF Functions/SA ECDF Functions - Loss/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_sa = readRDS("ECDF Functions/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
+ecdf_bank = readRDS("ECDF Functions/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds")
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
@@ -1006,11 +1712,11 @@ purrr::walk(c("future", "future.apply", "ggplot2", "tidyverse", "tibble", "progr
 
 setwd("L:\\Wetland Flood Mitigation")
 
-loss_summary = readRDS("CONUS/Wetland Loss/Extractions/Extract Service Area Loss/SA Summaries Loss/sa_summary_loss.rds")
-bank_summary = readRDS("Extractions/Extract Banks 2021/bank_summary_2021.rds")
+loss_summary = readRDS("Extractions and Summaries/Extract Service Area - Loss/sa_summary_loss.rds")
+bank_summary = readRDS("Extractions and Summaries/Extract Bank/bank_summary_2021.rds")
 
 sas= readRDS("Service Areas/ServiceAreas_agg.rds")
-banks = readRDS("Footprints/footprints_and_buffers.rds")
+banks = readRDS("Bank Footprints/footprints_and_buffers.rds")
 
 
 #Find which states intersect this SA ----------------------------------------
@@ -1407,8 +2113,8 @@ saplot_nbm
 
 # Map CYPRESS
 
-test = readRDS(paste0(datadir,"Extractions and Summaries/sa_summary_loss.rds"))
-test_bank = readRDS(paste0(datadir,"Extractions and Summaries/bank_summary.rds"))
+test = readRDS(paste0(datadir,"Extractions and Summaries/Extract Service Area - Loss/sa_summary_loss.rds"))
+test_bank = readRDS(paste0(datadir,"Extractions and Summaries/Extract Bank/bank_summary.rds"))
 
 sas= readRDS(paste0(datadir,"Service Areas/ServiceAreas_agg.rds"))
 banks = readRDS(paste0(datadir, "Footprints/footprints_and_buffers.rds"))
@@ -1773,9 +2479,9 @@ ylim <- c(bb["ymin"], bb["ymax"])
 ####################################################
 
 # Update file paths
-ecdf_loss = readRDS(paste0(datadir, "Extractions and Summaries/Loss ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
-ecdf_sa = readRDS(paste0(datadir, "Extractions and Summaries/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
-ecdf_bank = readRDS(paste0(datadir, "Extractions and Summaries/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_loss = readRDS(paste0(datadir, "ECDF Functions/SA ECDF Functions - Loss/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_sa = readRDS(paste0(datadir, "ECDF Functions/SA ECDF Functions/ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
+ecdf_bank = readRDS(paste0(datadir, "ECDF Functions/Bank ECDF Functions/bank_ecdf_fn_Big_Cypress_MB_Phase_I-V.rds"))
 
 
 # Helper: Safely convert ECDF to data frame if it's valid
