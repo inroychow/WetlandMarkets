@@ -4,19 +4,22 @@ library(lfe)
 library(modelsummary)
 
 #first assemble bank statistics dataset
-loss=readRDS("data/Summary data/loss_summary.rds")
+loss=readRDS("data/loss_summary_pool.rds")
 colnames(loss)[1:25]=paste0(colnames(loss)[1:25],"_loss")
 
-bank=readRDS("data/Summary data/bank_summary.rds")
+bank=readRDS("data/bank_summary_pool.rds")
 colnames(bank)[2:28]=paste0(colnames(bank)[2:28],"_bank")
 
-wetlanddata=merge(loss,bank,by.x="sa_id",by.y="bank_name")
+wetlanddata=merge(loss,bank,by.x="pool_id",by.y="pool_id")
 
 #read in coefficients shorter time period and coverage control
-coefs=read.csv(file="data/hurdle_model_2009_2021_censusFEs_policycontrol.csv")
+coefs=read.csv(file="data/hurdle_model_2009_2021_censusFEs_policycontrol_weighted_pooled.csv")
 #merge in wetland data
-coefs=merge(coefs,wetlanddata,by.x="banks_upstream",by.y="sa_id",all=FALSE)
+coefs=merge(coefs,wetlanddata,by.x="banks_upstream",by.y="pool_id",all=FALSE)
 coefs$weight=1/sqrt(coefs$std.error)
+
+#cut spurious tail of weights
+coefs$weight[which(coefs$weight>20)]=NA
 
 #greater flood damages over time, controling for NFIP coverage, is associated with estimated upstream lost wetland value
 mod_zero_simple=lm(estimate~I(log(sum_housing_value_loss)),data=coefs[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0),],weights = coefs$weight[which(coefs$stage=="zero"&coefs$sum_housing_value_loss>0)])
