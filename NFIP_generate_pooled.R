@@ -218,3 +218,9 @@ claims_final = claims_final_pooled %>%
 # Save final dataset
 saveRDS(claims_final, "NFIP/nfipbankdata_pool.rds")
 
+
+
+
+###
+
+test = readRDS("CONUS/NFIP/nfipbankdata_pool.rds")

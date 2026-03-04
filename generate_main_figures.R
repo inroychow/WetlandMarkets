@@ -1246,9 +1246,9 @@ library(data.table)
 library(future)
 library(future.apply)
 library(progressr)
-
+datadir = base_dir <- "C:\\Users\\indumati\\Box\\ECDF Functions"
 # Setup directories and file lists
-base_dir <- "C:\\Users\indumati\\Box\\ECDF Functions"
+base_dir <- "C:\\Users\\indumati\\Box\\ECDF Functions"
 bankfiles <- list.files(file.path(base_dir, "Bank ECDF Functions"), full.names = TRUE)
 lossfiles <- list.files(file.path(base_dir, "SA ECDF Functions - Loss"), full.names = TRUE)
 
@@ -1263,6 +1263,7 @@ loss_names <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", loss_names)
 complete_units <- intersect(bank_names, loss_names)
 cat("Units with both bank and loss files:", length(complete_units), "\n")
 
+bank_pool_map = readRDS("C:\\Users\\indumati\\Box\\Paper2_final\\Extractions and Summaries\\ECDF Functions\\bank_pool_map.rds")
 # Create pool lookup
 pool_lookup <- bank_pool_map %>%
   distinct(pool_id, sa_id = bank_name)
@@ -1294,6 +1295,83 @@ cat("Pools covered:", length(pools_covered), "out of", length(total_pools), "\n"
 
 # Setup x_grid (same as your original)
 x_grid <- 10^seq(-2, 3.5, length.out = 750)
+
+datadir = "C:\\Users\\indumati\\Box\\Paper2_final"
+# process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfiles=lossfiles, x_grid=x_grid) {
+#   # Always load loss data
+#   lossfile <- paste0(datadir, "ECDF Functions/SA ECDF Functions - Loss/ecdf_fn_", unit_name, ".rds")
+#   loss_data <- if (lossfile %in% lossfiles) readRDS(lossfile) else NA
+# 
+#   # Determine if unit is in a pool
+#   pool_id <- pool_lookup$pool_id[pool_lookup$sa_id == unit_name]
+# 
+#   if (length(pool_id) > 0) {
+#     # POOLED UNIT: Load from pooled directory
+#     poolfile <- paste0(datadir, "ECDF Functions/Pooled HUC8 ECDFs/ecdf_pool_vs_sa_", pool_id[1], ".rds")
+#     if (file.exists(poolfile)) {
+#       pool_data <- readRDS(poolfile)
+#       bank_data <- pool_data$bank_ecdf
+#     } else {
+#       return(NULL)
+#     }
+#   } else {
+#     # SOLO UNIT: Load from individual bank directory
+#     bankfile <- paste0(datadir, "ECDF Functions/Bank ECDF Functions/bank_ecdf_fn_", unit_name, ".rds")
+#     bank_data <- if (bankfile %in% bankfiles) readRDS(bankfile) else NA
+#   }
+# 
+#   # Validate required objects
+#   if (!is.list(bank_data) || !is.list(loss_data)) return(NULL)
+#   if (!is.function(bank_data$housing_units) || !is.function(loss_data$housing_units)) return(NULL)
+#   if (!is.function(bank_data$housing_value) || !is.function(loss_data$housing_value)) return(NULL)
+# 
+#   # Extract raw values
+#   bank_vals  <- environment(bank_data$housing_units)$x
+#   bank_hval  <- environment(bank_data$housing_value)$x
+#   loss_vals  <- environment(loss_data$housing_units)$x
+#   loss_hval  <- environment(loss_data$housing_value)$x
+# 
+#   # Compute means
+#   bank_mean_vals <- mean(bank_vals, na.rm = TRUE)
+#   bank_mean_hval <- mean(bank_hval, na.rm = TRUE)
+# 
+#   # Normalize accordingly
+#   loss_vals_norm <- loss_vals / bank_mean_vals
+#   loss_hval_norm <- loss_hval / bank_mean_hval
+# 
+#   n_obs <- length(loss_vals_norm)
+# 
+#   # Optional downsampling
+#   if (n_obs > 1e5) {
+#     sampled_indices <- sample(seq_len(n_obs), 1e5)
+#     loss_vals_norm <- loss_vals_norm[sampled_indices]
+#     loss_hval_norm <- loss_hval_norm[sampled_indices]
+#   }
+# 
+#   # Evaluate ECDFs
+#   ecdf_vals  <- ecdf(loss_vals_norm)
+#   ecdf_hvals <- ecdf(loss_hval_norm)
+# 
+#   # Output both sets as tibbles
+#   result_units <- tibble(
+#     unit = unit_name,
+#     comparison = "normalized_loss_units",
+#     x = x_grid,
+#     y = ecdf_vals(x_grid),
+#     n_obs = n_obs
+#   )
+# 
+#   result_values <- tibble(
+#     unit = unit_name,
+#     comparison = "normalized_loss_values",
+#     x = x_grid,
+#     y = ecdf_hvals(x_grid),
+#     n_obs = n_obs
+#   )
+# 
+#   # Return combined result
+#   bind_rows(result_units, result_values)
+# }
 
 process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfiles=lossfiles, x_grid=x_grid) {
   # Always load loss data
@@ -1372,7 +1450,7 @@ process_unit <- function(unit_name, datadir=datadir, bankfiles=bankfiles, lossfi
 }
 
 # Your exact parallel processing workflow
-plan(multisession, workers= 10)
+plan(multisession, workers= 5)
 handlers("txtprogressbar")
 
 with_progress({
@@ -1388,15 +1466,59 @@ results_long <- Filter(Negate(is.null), results_long)
 results_long_normalized <- bind_rows(results_long)
 
 
-fwrite(results_long_normalized,file=paste0(basedir,"\\poolednormalized_ecdfs_loss.csv"))
+fwrite(results_long_normalized,file=paste0(base_dir,"\\poolednormalized_ecdfs_loss.csv"))
 
+results_long_normalized = 
 results_hu <- results_long_normalized %>%
   filter(comparison == "normalized_loss_units")
 
+# -----------------------------------------------------------------------------------------
+# Get weighted mean -----------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------
+
+# Use only the housing-units-normalized ECDFs
+results_hu <- results_long %>%
+  filter(comparison == "normalized_loss_units")
+
+# 1) Get mean ratio per unit from its ECDF, then 2) take weighted mean across units
+unit_means <- results_hu %>%
+  arrange(unit, x) %>%
+  group_by(unit) %>%
+  mutate(delta = y - lag(y, default = 0)) %>%          # ECDF step sizes
+  summarize(
+    mean_ratio_unit = sum(x * delta, na.rm = TRUE),    # E[X | unit]
+    n_obs = first(n_obs),                              # weight by observations in that unit
+    .groups = "drop"
+  )
+
+mean_ratio_overall <- with(unit_means,
+                           weighted.mean(mean_ratio_unit, w = n_obs, na.rm = TRUE)
+)
+
+mean_ratio_overall #4.148653
+
+#------------------------------------------------------------
+
 # Recalculate ecdf_summary for housing units only
-ecdf_summary <- results_hu %>%
-  group_by(x, comparison) %>%
-  summarize(mean_y = weighted.mean(y, w = n_obs), .groups = "drop")
+
+ecdf_summary_hu <- results_hu %>%
+  arrange(unit, x) %>%
+  group_by(unit) %>%
+  # ensure each unit has y defined for every x in the grid
+  complete(x = x_grid) %>%
+  arrange(x, .by_group = TRUE) %>%
+  # carry forward step values; before first step, CDF = 0
+  fill(y, .direction = "down") %>%
+  mutate(y = if_else(is.na(y), 0, y)) %>%
+  ungroup() %>%
+  group_by(x) %>%
+  summarize(
+    mean_y = weighted.mean(y, w = n_obs, na.rm = TRUE),
+    .groups = "drop"
+  )
+# ecdf_summary <- results_hu %>%
+#   group_by(x, comparison) %>%
+#   summarize(mean_y = weighted.mean(y, w = n_obs), .groups = "drop")
 crossings <- ecdf_summary %>%
   # In case you have zero or negative x, remove them to avoid log-scale or approx issues
   filter(x > 0) %>%
@@ -1478,22 +1600,6 @@ fig3_ecdf <- ggplot(
     linewidth = 0.5,
     inherit.aes = FALSE
   ) +
-  # annotate("text",
-  #          x = big_cypress_label_point$x + 50,
-  #          y = big_cypress_label_point$y + 0.01,
-  #          label = "Big Cypress\nMitigation Bank",
-  #          color = "black",
-  #          fontface = "bold",
-  #          size = 4,
-  #          hjust = 0.3) +
-  # annotate("segment",
-  #          x = big_cypress_label_point$x + 26,  # moved from +20 to +23
-  #          xend = big_cypress_label_point$x + 6,  # was just big_cypress_label_point$x
-  #          y = big_cypress_label_point$y + 0.01,
-  #          yend = big_cypress_label_point$y,
-  #          color = "black",
-  #          arrow = arrow(length = unit(0.25, "cm")))+
-  
   # Color mapping for reference lines
   scale_color_manual(
     values = c(
@@ -1533,6 +1639,399 @@ fig3_ecdf <- ggplot(
 fig3_ecdf
 
 ggsave(file.path("Figures/ecdfplot_pooled.png"),  fig3_ecdf, width=12, height=8, dpi=300)
+
+############################################
+############ Figure 3 histogram ############
+############################################
+
+# ------------------ Libraries ------------------
+library(tidyverse)   # dplyr, tibble, purrr, ggplot2, stringr, etc.
+
+# ------------------ Paths ----------------------
+# set this to your ECDF Functions folder (same as in your workflow)
+datadir  <- "C:\\Users\\indumati\\Box\\Paper2_final"
+bank_dir <- file.path(datadir, "Extractions and Summaries/ECDF Functions/Bank ECDF Functions")
+loss_dir <- file.path(datadir, "Extractions and Summaries/ECDF Functions/SA ECDF Functions - Loss")
+
+# ------------------ Helpers --------------------
+# Extract raw x vector from an ecdf() function saved in RDS
+get_ecdf_x <- function(fn) {
+  if (!is.function(fn)) return(numeric(0))
+  x <- environment(fn)$x
+  x[is.finite(x)]
+}
+
+# Load a unit's RDS bundles; require HU, HV, and population to exist
+load_unit <- function(unit) {
+  bf <- file.path(bank_dir, paste0("bank_ecdf_fn_", unit, ".rds"))
+  lf <- file.path(loss_dir, paste0("ecdf_fn_", unit, ".rds"))
+  if (!file.exists(bf) || !file.exists(lf)) return(NULL)
+  bank <- readRDS(bf)
+  loss <- readRDS(lf)
+  req  <- c("housing_units", "housing_value", "population")
+  if (!all(req %in% names(bank)) || !all(req %in% names(loss))) return(NULL)
+  list(unit = unit, bank = bank, loss = loss)
+}
+
+# ------------------ Discover units ------------------
+bankfiles <- list.files(bank_dir, full.names = TRUE)
+lossfiles <- list.files(loss_dir, full.names = TRUE)
+
+units_bank <- basename(bankfiles) |>
+  str_replace("^bank_ecdf_fn_", "") |>
+  str_replace("\\.rds$", "")
+
+units_loss <- basename(lossfiles) |>
+  str_replace("^ecdf_fn_", "") |>
+  str_replace("\\.rds$", "")
+
+units <- intersect(units_bank, units_loss)
+
+# ------------------ Load bundles ------------------
+bundles <- lapply(units, load_unit)
+bundles <- Filter(Negate(is.null), bundles)
+
+# ------------------ Build unit_means ------------------
+# (includes housing units, housing value, and population; we'll plot HU)
+unit_means <- purrr::map_dfr(bundles, function(b) {
+  bu <- get_ecdf_x(b$bank$housing_units)
+  lu <- get_ecdf_x(b$loss$housing_units)
+  bv <- get_ecdf_x(b$bank$housing_value)
+  lv <- get_ecdf_x(b$loss$housing_value)
+  bp <- get_ecdf_x(b$bank$population)
+  lp <- get_ecdf_x(b$loss$population)
+  
+  tibble(
+    unit = b$unit,
+    # housing units
+    mean_bank_units = mean(bu, na.rm = TRUE),
+    mean_loss_units = mean(lu, na.rm = TRUE),
+    n_bank_units    = length(bu),
+    n_loss_units    = length(lu),
+    # housing value
+    mean_bank_value = mean(bv, na.rm = TRUE),
+    mean_loss_value = mean(lv, na.rm = TRUE),
+    n_bank_value    = length(bv),
+    n_loss_value    = length(lv),
+    # population
+    mean_bank_pop   = mean(bp, na.rm = TRUE),
+    mean_loss_pop   = mean(lp, na.rm = TRUE),
+    n_bank_pop      = length(bp),
+    n_loss_pop      = length(lp)
+  )
+})
+
+# ------------------ Histogram (housing units) ------------------
+library(ggplot2)
+library(dplyr)
+
+hist_df <- unit_means %>%
+  filter(is.finite(mean_bank_units), mean_bank_units > 0) %>%
+  mutate(ratio_loss_bank = mean_loss_units / mean_bank_units)
+
+p_hist_hu <- ggplot(hist_df, aes(x = ratio_loss_bank)) +
+  # histogram with finer bins
+  geom_histogram(
+    binwidth = 0.75,
+    fill     = "#4C9BE8",
+    color    = "white",
+    alpha    = 0.8
+  ) +
+  # reference lines at 1 and 2
+  geom_vline(xintercept = 1, linetype = "dashed", linewidth = 0.8, colour = "gray20") +
+  # axis labels
+  labs(
+    x = "Flood Protection Index of Developed Wetlands, Relative to Bank Mean",
+    y = "Number of Markets"
+  ) +
+  # custom breaks, clean integers
+  scale_x_continuous(
+    breaks = c(0, 1, 2, 10, 20, 50),
+    expand = c(0, 0)   # no gap at left
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0)   # no gap at bottom
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.title       = element_text(size = 12),
+    axis.text        = element_text(size = 12),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    # keep only axis lines
+    panel.border     = element_blank(),
+    axis.line        = element_line(color = "black")
+  )
+
+p_hist_hu
+ggsave(file.path("CONUS/Graphics/fig3_hist.png"), p_hist_hu, width = 9, height = 5, dpi = 300)
+
+
+
+
+# Pick ONE bin spec to use everywhere
+bw <- 0.75
+xmax_all <- max(hist_df$ratio_loss_bank, na.rm = TRUE)
+# Explicit breaks so both plots bin identically
+brks <- seq(0, xmax_all + bw, by = bw)
+
+# --- MAIN ---
+p_hist_hu <- ggplot(hist_df, aes(x = ratio_loss_bank)) +
+  geom_histogram(
+    breaks = brks,             # << identical breaks
+    fill = "#4C9BE8", color = "white", alpha = 0.8
+  ) +
+  geom_vline(xintercept = 1, linetype = "dashed", linewidth = 0.8, colour = "gray20") +
+  labs(x = "Flood Protection Index of Developed Wetlands, Relative to Bank Mean",
+       y = "Number of Markets") +
+  scale_x_continuous(breaks = c(0, 1, 2, 10, 20, 50), expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(color = "black"))
+
+# --- INSET (zoom 0–20) ---
+library(cowplot)
+
+p_hist_inset <- ggplot(hist_df, aes(x = ratio_loss_bank)) +
+  geom_histogram(
+    breaks = brks,             # << same breaks as main
+    fill = "#4C9BE8", color = "white", alpha = 0.9
+  ) +
+  geom_vline(xintercept = 1, linetype = "dashed", linewidth = 0.6, colour = "gray20") +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(xlim = c(0, 15)) +                    # zoom only, same bins
+  scale_x_continuous(breaks = c(0, 1, 2, 4, 6, 10, 15, 20), expand = c(0, 0)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +  # small headroom
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 8),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", linewidth = 0.4, fill = NA),
+        plot.margin = margin(2, 2, 2, 2))
+
+# Overlay inset
+p_hist_with_inset <- ggdraw(p_hist_hu) +
+  draw_plot(p_hist_inset, x = 0.62, y = 0.55, width = 0.35, height = 0.35)
+
+p_hist_with_inset
+
+# ggsave("CONUS/Graphics/fig3_hist.png", p_hist_with_inset, width = 9, height = 5, dpi = 300)
+
+
+## Hist with log scale
+
+hist_df <- unit_means %>%
+  filter(is.finite(mean_bank_units), mean_bank_units > 0, 
+         is.finite(mean_loss_units), mean_loss_units > 0) %>%
+  mutate(ratio_loss_bank = mean_loss_units / mean_bank_units)
+
+cat("hist_df has", nrow(hist_df), "rows\n")
+
+p_hist_hu <- ggplot(hist_df, aes(x = ratio_loss_bank)) +
+  geom_histogram(
+    bins = 50,  # Using bins instead of binwidth for log scale
+    fill = "#4C9BE8",
+    color = "white",
+    alpha = 0.8
+  ) +
+  geom_vline(xintercept = 1, linetype = "dashed", linewidth = 0.8, colour = "gray20") +
+  labs(
+    x = "Flood Protection Index of Developed Wetlands, Relative to Bank Mean",
+    y = "Number of Markets"
+  ) +
+  scale_x_log10(
+    breaks = c(0.1, 1, 1.5, 2, 10, 100, 1000),
+    labels = c("0.1", "1", "1.5", "2", "10", "100", "1000"),
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+
+p_hist_hu
+
+################################# 
+# SUMMARY STATS #################
+#################################
+
+### Averages 
+
+# Define thresholds
+cut_pts <- c(`gt1` = 1, `gte1.5` = 1.5, `gte2` = 2, `gte4.5` = 4.5, `gt10` = 10)
+
+# Compute tail shares per unit directly from raw data
+shares_per_unit <- map_dfr(names, function(nm) {
+  loss_pth <- file.path(sa_loss_ecdf_dir, paste0("ecdf_fn_", nm, ".rds"))
+  if (!file.exists(loss_pth)) return(NULL)
+  
+  bank_ecdf <- get_bank_ecdf(nm)
+  if (is.null(bank_ecdf)) return(NULL)
+  
+  if (!is.function(bank_ecdf$housing_units)) return(NULL)
+  loss_ecdf <- readRDS(loss_pth)
+  if (!is.function(loss_ecdf$housing_units)) return(NULL)
+  
+  bank_vals <- environment(bank_ecdf$housing_units)$x
+  loss_vals <- environment(loss_ecdf$housing_units)$x
+  
+  if (!is.numeric(bank_vals) || !is.numeric(loss_vals)) return(NULL)
+  if (!length(bank_vals) || !length(loss_vals)) return(NULL)
+  
+  bank_mean <- mean(bank_vals, na.rm = TRUE)
+  if (!is.finite(bank_mean) || bank_mean <= 0) return(NULL)
+  
+  # Normalize loss values by bank mean
+  loss_ratio <- loss_vals / bank_mean
+  
+  # Calculate tail shares for each threshold
+  shares <- map_dbl(cut_pts, function(thresh) {
+    mean(loss_ratio > thresh, na.rm = TRUE) * 100
+  })
+  
+  tibble(
+    unit = nm,
+    n_obs = length(loss_vals),
+    !!!setNames(as.list(shares), names(cut_pts))
+  )
+})
+
+# Overall weighted mean across all units
+overall_wtd <- shares_per_unit %>%
+  select(-unit) %>%
+  summarise(across(-n_obs, ~ weighted.mean(.x, w = n_obs, na.rm = TRUE)))
+
+print(overall_wtd)
+
+# For a nice formatted table
+percent_above_tbl <- tibble(
+  threshold = names(cut_pts),
+  x = cut_pts,
+  pct_above = c(overall_wtd$gt1, overall_wtd$`gte1.5`, overall_wtd$gte2, 
+                overall_wtd$`gte4.5`, overall_wtd$gt10)
+) %>%
+  mutate(pct_above = round(pct_above, 1))
+
+print(percent_above_tbl)
+
+
+###
+
+######
+# --- Inputs 
+datadir          <- "L:/Wetland Flood Mitigation/ECDF Functions"
+bank_ecdf_dir    <- file.path(datadir, "Bank ECDF Functions")
+sa_loss_ecdf_dir <- file.path(datadir, "SA ECDF Functions - Loss")
+pooled_dir       <- file.path(datadir, "Pooled HUC8 ECDFs")
+bank_pool_map    <- readRDS(paste0(datadir, "/bank_pool_map.rds"))
+
+# Pool lookup: pool_id per service-area id 
+pool_lookup <- bank_pool_map %>% distinct(pool_id, sa_id = bank_name)
+
+# Build unit list: one rep service area per pool + all solo service areas
+bank_units  <- sub("^bank_ecdf_fn_(.*)\\.rds$", "\\1", list.files(bank_ecdf_dir))
+loss_units  <- sub("^ecdf_fn_(.*)\\.rds$", "\\1", list.files(sa_loss_ecdf_dir))
+complete    <- intersect(bank_units, loss_units)
+
+# All service areas that are part of any pool
+all_pooled_sa <- pool_lookup$sa_id
+
+# One representative service area per pool (from those with complete data)
+pools_with_complete <- pool_lookup %>%
+  filter(sa_id %in% complete) %>%
+  group_by(pool_id) %>% 
+  slice(1) %>% 
+  ungroup()
+sa_multi <- pools_with_complete$sa_id
+
+# Solo service areas: not in any pool
+sa_solo <- setdiff(complete, all_pooled_sa)
+
+# Final list of service area IDs to process
+names <- c(sa_multi, sa_solo)
+
+cat("Service areas representing pools:", length(sa_multi), "\n")
+cat("Solo service areas:", length(sa_solo), "\n")
+cat("Total service areas to process:", length(names), "\n")
+
+# Helper to get the correct BANK ecdf object (pooled vs solo)
+get_bank_ecdf <- function(unit_name) {
+  pool_id <- pool_lookup$pool_id[pool_lookup$sa_id == unit_name]
+  if (length(pool_id) > 0) {
+    poolfile <- file.path(pooled_dir, paste0("ecdf_pool_vs_sa_", pool_id[1], ".rds"))
+    if (!file.exists(poolfile)) return(NULL)
+    readRDS(poolfile)$bank_ecdf
+  } else {
+    bankfile <- file.path(bank_ecdf_dir, paste0("bank_ecdf_fn_", unit_name, ".rds"))
+    if (!file.exists(bankfile)) return(NULL)
+    readRDS(bankfile)
+  }
+}
+
+# Core computation: mean(loss) / mean(bank) for the HOUSING-UNITS index
+ratio_df <- map_dfr(names, function(nm) {
+  loss_pth <- file.path(sa_loss_ecdf_dir, paste0("ecdf_fn_", nm, ".rds"))
+  if (!file.exists(loss_pth)) return(NULL)
+  
+  bank_ecdf <- get_bank_ecdf(nm)
+  if (is.null(bank_ecdf)) return(NULL)
+  
+  # Pull raw x vectors from ECDF closures (housing_units index)
+  if (!is.function(bank_ecdf$housing_units)) return(NULL)
+  loss_ecdf <- readRDS(loss_pth)
+  if (!is.function(loss_ecdf$housing_units)) return(NULL)
+  
+  bank_vals <- environment(bank_ecdf$housing_units)$x
+  loss_vals <- environment(loss_ecdf$housing_units)$x
+  
+  # Guardrails
+  if (!is.numeric(bank_vals) || !is.numeric(loss_vals)) return(NULL)
+  if (!length(bank_vals) || !length(loss_vals))       return(NULL)
+  
+  tibble(
+    unit      = nm,
+    mean_bank = mean(bank_vals, na.rm = TRUE),
+    mean_loss = mean(loss_vals, na.rm = TRUE),
+    n_pixels  = length(loss_vals)
+  )
+}) %>%
+  filter(is.finite(mean_bank), mean_bank > 0,
+         is.finite(mean_loss), mean_loss > 0) %>%
+  mutate(ratio_mean = mean_loss / mean_bank)
+
+# Area-weighted average across all service areas
+area_weighted_avg <- with(ratio_df, weighted.mean(ratio_mean, w = n_pixels, na.rm = TRUE))
+max_row <- ratio_df %>% arrange(desc(ratio_mean)) %>% slice(1)
+
+p50_ratio <- median(ratio_df$ratio_mean, na.rm = TRUE)
+p95_ratio <- quantile(ratio_df$ratio_mean, 0.95, na.rm = TRUE)
+
+cat(glue(
+  "wetlands lost to development exist near prior developed areas and therefore ",
+  "provide relatively high levels of downstream flood protection compared to ",
+  "wetlands created in compensation--on average ≈ {round(area_weighted_avg, 1)} times as much, ",
+  "though in some cases up to {round(max_row$ratio_mean, 0)} times."
+))
+
+cat("\n\nDetails:\n")
+cat("Number of service areas analyzed:", nrow(ratio_df), "\n")
+cat("Median ratio:", round(p50_ratio, 1), "\n")
+cat("95th percentile ratio:", round(p95_ratio, 1), "\n")
+max_row
+
 
 ################# 
 ### Figure 4 ####

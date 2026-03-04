@@ -3,7 +3,7 @@ library(tidyverse)
 library(data.table)
 library(broom)
 
-dat=readRDS("data/nfipbankdata_unlist.rds")
+dat=readRDS("NFIP/nfipbankdata_unpooled.rds")
 
 policies=readRDS("data/policies.rds")
 
