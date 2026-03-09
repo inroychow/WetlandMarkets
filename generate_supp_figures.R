@@ -1195,7 +1195,7 @@ max_rows <- 10000
 plot_df_sampled <- plot_df %>%
   group_by(group) %>%
   mutate(n_rows = n()) %>%
-  group_modify(~ if (.x$n_rows[1] > max_rows) slice_sample(.x, n = max_rows) else .x) %>%
+  group_modify(~ if (.x$n_rows[1] > max_rows) slice_sample(.x, n = max_rows) else .x))%>%
   ungroup() %>%
   dplyr::select(-n_rows)
 

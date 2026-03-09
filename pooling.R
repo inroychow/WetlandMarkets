@@ -103,9 +103,9 @@ print(bbox_duplicates)
 # ------------------------------------------------------------
 sanitize_name <- function(x) {
   x %>% 
-    str_replace_all("[^A-Za-z0-9_-]", "_") %>%   # keep safe chars
-    str_replace_all("_+", "_")  %>%              # collapse repeats
-    str_remove_all("^_|_$")                      # trim ends
+    str_replace_all("[^A-Za-z0-9_-]", "_") %>%  
+    str_replace_all("_+", "_")  %>%             
+    str_remove_all("^_|_$")                      
 }
 
 compute_ecdf_set <- function(df, vars = c("housing_units",
@@ -121,7 +121,7 @@ compute_ecdf_set <- function(df, vars = c("housing_units",
 }
 
 # ------------------------------------------------------------
-#            1.  pool ⇄ bank cross-walk  (once)
+#             pool ⇄ bank cross-walk  (once)
 # ------------------------------------------------------------
 #  bbox_duplicates is already in memory; if not, readRDS it here
 bank_pool_map <- bbox_duplicates %>% 
@@ -132,7 +132,11 @@ bank_pool_map <- bbox_duplicates %>%
   mutate(bank_name = sanitize_name(bank_name_raw))
 
 # ------------------------------------------------------------
+<<<<<<< HEAD
 #            2.  locate extract files on disk  (once)
+=======
+#            locate extract files on disk  (once)
+>>>>>>> 4778873 (fixed pooling.rds)
 # ------------------------------------------------------------
 
 bank_extract_dir <- pth("Extractions and Summaries", "Extract Banks")
@@ -155,7 +159,11 @@ sa_files <- tibble(file_path = list.files(sa_extract_dir,
             by = "sa_id")
 
 # ------------------------------------------------------------
+<<<<<<< HEAD
 #            3.  main worker: one pool at a time
+=======
+#              main worker: one pool at a time
+>>>>>>> 4778873 (fixed pooling.rds)
 # ------------------------------------------------------------
 rename_layers <- function(df) {
   if (ncol(df) >= 4)               
@@ -206,7 +214,11 @@ compare_one_pool <- function(pid,
 
 
 # ------------------------------------------------------------
+<<<<<<< HEAD
 #            4.  run for every pool & save
+=======
+#            run for every pool & save
+>>>>>>> 4778873 (fixed pooling.rds)
 # ------------------------------------------------------------
 all_pools   <- sort(unique(bank_pool_map$pool_id))
 output_dir  <- pth("ECDF Functions", "Pool_vs_SA_remainder")
@@ -1042,7 +1054,11 @@ ratio_df <- map_dfr(names, function(nm) {
 area_weighted_avg <- with(ratio_df, weighted.mean(ratio_mean, w = n_pixels, na.rm = TRUE))
 max_row <- ratio_df %>% arrange(desc(ratio_mean)) %>% slice(1)
 
+<<<<<<< HEAD
 # Optional extras if you want them for robustness notes
+=======
+# Optional extras 
+>>>>>>> 4778873 (fixed pooling.rds)
 p50_ratio <- median(ratio_df$ratio_mean, na.rm = TRUE)
 p95_ratio <- quantile(ratio_df$ratio_mean, 0.95, na.rm = TRUE)
 
